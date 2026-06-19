@@ -1,4 +1,6 @@
 const db = require('./db');
+const fs = require('fs');
+const path = require('path');
 
 const collectors = {};
 const lastTicks = {}; // symbol -> { price, volume }
@@ -53,18 +55,25 @@ function startCollector(symbol, token, smartApi) {
         const fallbackStr = db.formatTimestamp(now);
         const rawTime = tick.exchangeTime || tick.lastTradeTime || tick.exchTradeTime || fallbackStr;
         const price = tick.ltp != null ? tick.ltp : tick.close;
+        const open = tick.open != null ? tick.open : price;
+        const high = tick.high != null ? tick.high : price;
+        const low = tick.low != null ? tick.low : price;
+        const close = tick.close != null ? tick.close : price;
         const volume = tick.lastTradedQuantity || tick.volume || 0;
         if (!tick.lastTradedQuantity && !tick.volume && !lastTicks[key]) {
           console.log(`[TickCollector/${key}] WARNING: getLtpData endpoint returns no volume field. Volume will be 0.`);
         }
 
         const last = lastTicks[key];
-        if (last && last.price === price && last.volume === volume) {
+        if (last && last.close === close && last.volume === volume && last.open === open && last.high === high && last.low === low) {
           return;
         }
-        lastTicks[key] = { price, volume };
+        lastTicks[key] = { open, high, low, close, volume };
 
-        await db.insertTick(key, price, volume, rawTime);
+        await db.insertTick(key, open, high, low, close, volume, rawTime);
+        const msg = `[TickCollector] Received Live Tick -> ${key}: Open=${open}, High=${high}, Low=${low}, Close=${close}, Vol=${volume}, Time=${rawTime}`;
+        console.log(msg);
+        fs.appendFile(path.join(__dirname, 'tick_collector.log'), `[${new Date().toISOString()}] ${msg}\n`, (err) => { if(err) console.error('Error writing tick log', err); });
       }
     } catch (err) {
       // suppress log spam on transient network errors

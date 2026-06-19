@@ -220,8 +220,9 @@ async function loop() {
   }
 }
 
-if (process.argv.includes('--once')) {
-  main().then(() => process.exit(0));
-} else {
-  loop();
+function startPredictionEngine() {
+  console.log("Starting Background Prediction Engine. Waiting for 09:20 every day...");
+  loop().catch(console.error);
 }
+
+module.exports = { startPredictionEngine, main };

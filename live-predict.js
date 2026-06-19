@@ -65,7 +65,7 @@ app.get("/api/strategy/predict", async (req, res) => {
     let token = tokenCache[symbol] || tokenCache[`${symbol}:NSE`];
     if (!token) {
       try {
-        token = await angelone.getTokenForSymbol(symbol);
+        token = symbols[symbol];
         if (token) {
           tokenCache[symbol] = token;
           tokenCache[`${symbol}:NSE`] = token;
@@ -343,7 +343,7 @@ app.all("/api/predict-ondemand", async (req, res) => {
         
         if (fromDateStr < toDateStr) {
           try {
-            const token = await angelone.getTokenForSymbol(symbol);
+            const token = symbols[symbol];
             if (token) {
               const hist = await angelone.fetchHistoricalCandles(symbol, token, "FIVE_MINUTE", fromDateStr, toDateStr);
               if (hist && hist.data) {
@@ -473,11 +473,11 @@ async function startGlobalTickCollector() {
   console.log("[GlobalTickCollector] Initializing tokens for all symbols...");
   const validSymbols = [];
   
-  for (const sym of symbols) {
+  for (const sym of Object.keys(symbols)) {
     try {
       let token = tokenCache[sym] || tokenCache[`${sym}:NSE`];
       if (!token) {
-         token = await angelone.getTokenForSymbol(sym);
+         token = symbols[sym];
          if (token) {
            tokenCache[sym] = token;
            tokenCache[`${sym}:NSE`] = token;
@@ -622,7 +622,7 @@ async function startBackgroundGapFiller() {
               const toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
               
               if (fromDateStr < toDateStr) {
-                const token = await angelone.getTokenForSymbol(symbol);
+                const token = symbols[symbol];
                 if (token) {
                   const hist = await angelone.fetchHistoricalCandles(symbol, token, "FIVE_MINUTE", fromDateStr, toDateStr);
                   if (hist && hist.data) {

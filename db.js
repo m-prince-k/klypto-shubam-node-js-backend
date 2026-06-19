@@ -49,7 +49,10 @@ function initDB() {
         CREATE TABLE IF NOT EXISTS ticks (
           id SERIAL PRIMARY KEY,
           symbol TEXT NOT NULL,
-          price REAL NOT NULL,
+          open REAL NOT NULL,
+          high REAL NOT NULL,
+          low REAL NOT NULL,
+          close REAL NOT NULL,
           volume INTEGER NOT NULL,
           timestamp TIMESTAMP NOT NULL
         );
@@ -65,14 +68,14 @@ function initDB() {
   });
 }
 
-function insertTick(symbol, price, volume, timestampStr) {
+function insertTick(symbol, open, high, low, close, volume, timestampStr) {
   return new Promise(async (resolve, reject) => {
     try {
       const query = `
-        INSERT INTO ticks (symbol, price, volume, timestamp)
-        VALUES ($1, $2, $3, $4) RETURNING id;
+        INSERT INTO ticks (symbol, open, high, low, close, volume, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id;
       `;
-      const res = await pool.query(query, [symbol, price, volume, timestampStr]);
+      const res = await pool.query(query, [symbol, open, high, low, close, volume, timestampStr]);
       resolve(res.rows[0].id);
     } catch (err) {
       console.error('[DB] Error inserting tick:', err);
@@ -110,10 +113,10 @@ function getTicksInRange(symbol, fromStr, toStr) {
 function aggregateOHLCFromTicks(rows) {
   if (!rows || rows.length === 0) return null;
   return {
-    open: rows[0].price,
-    high: Math.max(...rows.map(r => r.price)),
-    low: Math.min(...rows.map(r => r.price)),
-    close: rows[rows.length - 1].price,
+    open: rows[0].open != null ? rows[0].open : rows[0].close,
+    high: Math.max(...rows.map(r => r.high != null ? r.high : r.close)),
+    low: Math.min(...rows.map(r => r.low != null ? r.low : r.close)),
+    close: rows[rows.length - 1].close,
     volume: rows.reduce((sum, r) => sum + r.volume, 0),
     tick_count: rows.length
   };

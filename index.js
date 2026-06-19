@@ -537,7 +537,31 @@ app.get("/api/predictResult", async (req, res) => {
   } catch (err) {
     console.error("Error in /api/predictResult:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
 });
+
+// Regular interval check to clear logs at exactly 15:45 (3:45 PM)
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 15 && now.getMinutes() === 45) {
+    try {
+      const logsDir = path.join(__dirname, "prediction logs");
+      if (fs.existsSync(logsDir)) {
+        const files = fs.readdirSync(logsDir);
+        let cleared = false;
+        for (const file of files) {
+          if (file.endsWith(".log") && file !== "predictions_response.log") {
+            fs.unlinkSync(path.join(logsDir, file));
+            cleared = true;
+          }
+        }
+        if (cleared) console.log("✅ Cleared prediction logs at 3:45 PM.");
+      }
+    } catch (err) {
+      console.error("❌ Error clearing prediction logs:", err);
+    }
+  }
+}, 60 * 1000); // Check every minute
 
 const PORT = process.env.PORT || 3000;
 

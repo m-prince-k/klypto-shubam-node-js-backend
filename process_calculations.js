@@ -76,7 +76,11 @@ async function fillGapForSymbol(symbol, rawData) {
   const fromDateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   
   const now = new Date();
-  const toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  let toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const maxToDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} 15:25`;
+  if (toDateStr > maxToDateStr) {
+      toDateStr = maxToDateStr;
+  }
   
   if (fromDateStr >= toDateStr) return rawData;
   
@@ -90,8 +94,8 @@ async function fillGapForSymbol(symbol, rawData) {
         for (const candle of hist.data) {
             const candleDate = new Date(candle[0]);
             const candleDtStr = `${candleDate.getFullYear()}-${pad(candleDate.getMonth()+1)}-${pad(candleDate.getDate())} ${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
-            
-            if (candleDate > d) {
+            const timeStr = `${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
+            if (candleDate > d && timeStr >= "09:15:00" && timeStr <= "15:25:00") {
                 const newRow = {
                     datetime: candleDtStr,
                     exchange_code: "NSE",
@@ -128,6 +132,13 @@ async function processFile(file) {
         let rawData = await readCSV(inputPath, symbol);
         rawData = await fillGapForSymbol(symbol, rawData);
         
+        // Filter strictly to 09:15:00 - 15:25:00
+        rawData = rawData.filter(row => {
+            const timePart = row.datetime.split(' ')[1];
+            if (!timePart) return true;
+            return timePart >= "09:15:00" && timePart <= "15:25:00";
+        });
+        
         // Deep scan and calculation using existing calculate_parameters.js
         const processed = await generate_payload(rawData);
         
@@ -158,13 +169,18 @@ async function performCalculations() {
 }
 
 async function loop() {
+    const LAST_RUN_FILE = path.join(__dirname, 'last_calculated_date.txt');
     let lastProcessedDate = null;
+    if (fs.existsSync(LAST_RUN_FILE)) {
+        lastProcessedDate = fs.readFileSync(LAST_RUN_FILE, 'utf8').trim();
+    }
     
     console.log("Starting Post-Market Calculation Engine. Waiting for 15:45 every day...");
     
     while (true) {
         const now = new Date();
-        const currentDateStr = now.toISOString().split('T')[0]; // 'YYYY-MM-DD'
+        const pad = n => String(n).padStart(2, '0');
+        const currentDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
         
         const isPastTriggerTime = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 45);
         const alreadyProcessedToday = (lastProcessedDate === currentDateStr);
@@ -180,7 +196,8 @@ async function loop() {
             
             try {
                 await performCalculations();
-                lastProcessedDate = currentDateStr; // Mark as done for today
+                lastProcessedDate = currentDateStr; // Mark as done for today in memory
+                fs.writeFileSync(LAST_RUN_FILE, currentDateStr); // Save it so restarts don't re-trigger
             } catch (err) {
                 console.error("Error during calculations:", err);
             }
@@ -191,4 +208,6 @@ async function loop() {
     }
 }
 
-loop().catch(console.error);
+module.exports = {
+    startPostMarketCalculations: loop
+};
