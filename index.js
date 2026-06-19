@@ -12,6 +12,14 @@ const tickCollector = require("./tick-collector");
 
 const app = express();
 app.use(cors());
+app.options(/.*/, cors());
+
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT = Number(process.env.PORT || 3000);
+const startupState = {
+  databaseReady: false,
+  startupError: null,
+};
 
 console.log(
   "Angel Client Code:",
@@ -206,6 +214,26 @@ const smartApi = {
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+app.get("/", (req, res) => {
+  res.send("Klypto Shubham backend is running");
+});
+
+app.get("/health", (req, res) => {
+  const hasStartupError = Boolean(startupState.startupError);
+
+  res.status(hasStartupError ? 503 : 200).json({
+    status: hasStartupError
+      ? "degraded"
+      : startupState.databaseReady
+        ? "ready"
+        : "starting",
+    databaseReady: startupState.databaseReady,
+    startupError: startupState.startupError,
+    collectors: tickCollector.getActiveCollectors(),
+    uptime: process.uptime(),
+  });
+});
 
 app.post("/api/strategy/predict", async (req, res) => {
   await forwardToPredict(req, res);
@@ -540,43 +568,24 @@ app.get("/api/predictResult", async (req, res) => {
   }
 });
 
-// Regular interval check to clear logs at exactly 15:45 (3:45 PM)
-setInterval(() => {
-  const now = new Date();
-  if (now.getHours() === 15 && now.getMinutes() === 45) {
-    try {
-      const logsDir = path.join(__dirname, "prediction logs");
-      if (fs.existsSync(logsDir)) {
-        const files = fs.readdirSync(logsDir);
-        let cleared = false;
-        for (const file of files) {
-          if (file.endsWith(".log") && file !== "predictions_response.log") {
-            fs.unlinkSync(path.join(logsDir, file));
-            cleared = true;
-          }
-        }
-        if (cleared) console.log("✅ Cleared prediction logs at 3:45 PM.");
-      }
-    } catch (err) {
-      console.error("❌ Error clearing prediction logs:", err);
-    }
-  }
-}, 60 * 1000); // Check every minute
-
-const PORT = process.env.PORT || 3000;
-
-db.initDB()
-  .then(() => {
-    console.log("✅ Successfully connected to PostgreSQL Database!");
-    app.listen(PORT, () => {
-      console.log(`Express server listening on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("❌ Failed to connect to PostgreSQL Database:", err.message);
-    app.listen(PORT, () => {
-      console.log(
-        `Express server listening on port ${PORT} (Running without DB)`,
-      );
-    });
+function startHttpServer() {
+  app.listen(PORT, HOST, () => {
+    console.log(`Express server listening at http://${HOST}:${PORT}`);
+    console.log(`Health endpoint available at http://${HOST}:${PORT}/health`);
   });
+}
+
+async function bootstrapBackground() {
+  try {
+    console.log("[Startup] Initializing PostgreSQL in background...");
+    await db.initDB();
+    startupState.databaseReady = true;
+    console.log("✅ Successfully connected to PostgreSQL Database!");
+  } catch (err) {
+    startupState.startupError = err.message;
+    console.error("❌ Failed to connect to PostgreSQL Database:", err.message);
+  }
+}
+
+startHttpServer();
+bootstrapBackground();

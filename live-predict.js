@@ -5,6 +5,7 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const csv = require("csv-parser");
+const cors = require("cors");
 const { generate_payload } = require("./calculate_parameters.js");
 const db = require("./db");
 const tickCollector = require("./tick-collector");
@@ -24,11 +25,20 @@ function logToFile(file, msg) {
 }
 
 const app = express();
+app.use(cors());
+app.options(/.*/, cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-const PORT = process.env.LIVE_PORT || 3001;
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT = Number(process.env.LIVE_PORT || 3001);
 const PREDICT_URL = "http://43.205.133.183:8000/predict";
+const startupState = {
+  databaseReady: false,
+  collectorsStarted: false,
+  gapFillerStarted: false,
+  startupError: null,
+};
 
 const tokenCache = {};
 const ohlcvCache = {};
@@ -409,10 +419,24 @@ app.all("/api/predict-ondemand", async (req, res) => {
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("Klypto Shubham live predict backend is running");
+});
+
 // Health check
 app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
+  const hasStartupError = Boolean(startupState.startupError);
+  const isReady =
+    startupState.databaseReady &&
+    startupState.collectorsStarted &&
+    startupState.gapFillerStarted;
+
+  res.status(hasStartupError ? 503 : 200).json({
+    status: hasStartupError ? "degraded" : isReady ? "ready" : "starting",
+    databaseReady: startupState.databaseReady,
+    collectorsStarted: startupState.collectorsStarted,
+    gapFillerStarted: startupState.gapFillerStarted,
+    startupError: startupState.startupError,
     collectors: tickCollector.getActiveCollectors(),
     uptime: process.uptime(),
   });
@@ -444,15 +468,31 @@ process.on("SIGTERM", async () => {
 
 // Start server
 async function start() {
+  app.listen(PORT, HOST, () => {
+    console.log(`[Server] Live Predict server running at http://${HOST}:${PORT}`);
+    console.log(`[Server] API: http://${HOST}:${PORT}/api/strategy/predict?symbol=TCS`);
+    console.log(`[Server] Health: http://${HOST}:${PORT}/health`);
+  });
+
   try {
+    console.log("[Startup] Initializing DB in background...");
     await db.initDB();
+    startupState.databaseReady = true;
     console.log("[Server] DB initialized");
 
-    // Start global tick collector for all symbols
-    startGlobalTickCollector();
+    // Start global tick collector for all symbols without blocking HTTP startup.
+    Promise.resolve(startGlobalTickCollector()).catch((err) => {
+      startupState.startupError = err.message;
+      console.error("[Server] Global tick collector failed:", err);
+    });
+    startupState.collectorsStarted = true;
 
-    // Start silent 5-minute background gap filler
-    startBackgroundGapFiller();
+    // Start silent 5-minute background gap filler without blocking HTTP startup.
+    Promise.resolve(startBackgroundGapFiller()).catch((err) => {
+      startupState.startupError = err.message;
+      console.error("[Server] Background gap filler failed:", err);
+    });
+    startupState.gapFillerStarted = true;
 
     // Start daily prediction engine (runs at 09:20)
     startPredictionEngine();
@@ -466,14 +506,9 @@ async function start() {
         console.warn("[Server] Cleanup error:", err.message)
       );
     }, 30 * 60 * 1000);
-
-    app.listen(PORT, () => {
-      console.log(`[Server] Live Predict server running on port ${PORT}`);
-      console.log(`[Server] API: http://localhost:${PORT}/api/strategy/predict?symbol=TCS`);
-    });
   } catch (err) {
-    console.error("[Server] Failed to start:", err);
-    process.exit(1);
+    startupState.startupError = err.message;
+    console.error("[Server] Background startup failed:", err);
   }
 }
 

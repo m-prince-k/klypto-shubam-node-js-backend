@@ -11,6 +11,69 @@ const OUT_JSON_FOLDER = path.join(__dirname, 'extractJson');
 if (!fs.existsSync(OUT_CSV_FOLDER)) fs.mkdirSync(OUT_CSV_FOLDER);
 if (!fs.existsSync(OUT_JSON_FOLDER)) fs.mkdirSync(OUT_JSON_FOLDER);
 
+function padMissingCandles(data) {
+    if (!data || data.length === 0) return data;
+
+    const days = new Set();
+    data.forEach(row => {
+        const datePart = row.datetime.split(' ')[0];
+        if (datePart) days.add(datePart);
+    });
+    
+    const sortedDays = Array.from(days).sort();
+    
+    const times = [];
+    for (let h = 9; h <= 15; h++) {
+        for (let m = 0; m < 60; m += 5) {
+            const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+            if (timeStr >= "09:15:00" && timeStr <= "15:25:00") {
+                times.push(timeStr);
+            }
+        }
+    }
+    
+    const dataMap = new Map();
+    data.forEach(row => {
+        dataMap.set(row.datetime, row);
+    });
+
+    const paddedData = [];
+    let lastRow = null;
+
+    for (const day of sortedDays) {
+        let firstRowForDay = null;
+        for (const timeStr of times) {
+            const dt = `${day} ${timeStr}`;
+            if (dataMap.has(dt)) {
+                firstRowForDay = dataMap.get(dt);
+                break;
+            }
+        }
+
+        for (const timeStr of times) {
+            const dt = `${day} ${timeStr}`;
+            if (dataMap.has(dt)) {
+                lastRow = dataMap.get(dt);
+                paddedData.push(lastRow);
+            } else {
+                let referenceRow = lastRow || firstRowForDay;
+                if (referenceRow) {
+                    const newRow = { ...referenceRow };
+                    newRow.datetime = dt;
+                    newRow.open = referenceRow.close;
+                    newRow.high = referenceRow.close;
+                    newRow.low = referenceRow.close;
+                    newRow.volume = 0;
+                    paddedData.push(newRow);
+                    lastRow = newRow;
+                }
+            }
+        }
+    }
+    
+    return paddedData;
+}
+
 function emptyFolder(folderPath) {
     if (fs.existsSync(folderPath)) {
         fs.readdirSync(folderPath).forEach(file => {
@@ -135,9 +198,15 @@ async function processFile(file) {
         // Filter strictly to 09:15:00 - 15:25:00
         rawData = rawData.filter(row => {
             const timePart = row.datetime.split(' ')[1];
-            if (!timePart) return true;
+            if (!timePart) return false;
             return timePart >= "09:15:00" && timePart <= "15:25:00";
         });
+        
+        // Pad missing candles to guarantee continuous timeline 09:15 to 15:25 for every day
+        rawData = padMissingCandles(rawData);
+        
+        // Overwrite historical file to keep it clean and enforce 15:25 end
+        await writeCSV(inputPath, rawData);
         
         // Deep scan and calculation using existing calculate_parameters.js
         const processed = await generate_payload(rawData);
