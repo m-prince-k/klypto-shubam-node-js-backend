@@ -209,5 +209,9 @@ async function loop() {
 }
 
 module.exports = {
-    startPostMarketCalculations: loop
+    startPostMarketCalculations: loop,
+    performCalculations,
+    emptyFolder,
+    OUT_CSV_FOLDER,
+    OUT_JSON_FOLDER
 };

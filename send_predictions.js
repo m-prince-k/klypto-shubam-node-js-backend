@@ -199,24 +199,29 @@ async function main() {
   });
 }
 
+let lastRunDate = null;
 async function loop() {
   while (true) {
     const now = new Date();
     const h = now.getHours();
     const m = now.getMinutes();
+    const dateStr = now.toDateString();
 
-    // Run exactly at 09:20
-    if (h === 9 && m === 20) {
-      console.log(`Time is ${h}:${m}, exactly 09:20. Running prediction cycle...`);
-      await main();
+    // Run at or after 09:20, once per day
+    if ((h > 9 || (h === 9 && m >= 20)) && lastRunDate !== dateStr) {
+      console.log(`Time is ${h}:${m}, >= 09:20. Running prediction cycle for today...`);
+      try {
+        await main();
+        lastRunDate = dateStr;
+      } catch (err) {
+        console.error("Error in prediction cycle:", err);
+      }
     } else {
-      console.log(`Time is ${h}:${m}. Not 09:20. Skipping execution.`);
+      console.log(`Time is ${h}:${m}. Not time yet or already run today. Skipping execution.`);
     }
 
-    const nextNow = new Date();
-    const msUntilNext5Min = (5 * 60 * 1000) - (nextNow.getTime() % (5 * 60 * 1000));
-    console.log(`Waiting ${Math.round(msUntilNext5Min / 1000)} seconds before next prediction cycle...`);
-    await new Promise((r) => setTimeout(r, msUntilNext5Min));
+    // Sleep for 1 minute
+    await new Promise((r) => setTimeout(r, 60000));
   }
 }
 

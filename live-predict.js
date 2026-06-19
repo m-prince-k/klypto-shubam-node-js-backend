@@ -10,6 +10,8 @@ const db = require("./db");
 const tickCollector = require("./tick-collector");
 const angelone = require("./angelone-client");
 const symbols = require("./symbols.js");
+const { startPredictionEngine } = require("./send_predictions.js");
+const { startPostMarketCalculations } = require("./process_calculations.js");
 
 const ANGELONE_LOG = path.join(__dirname, 'angelone_ticks.log');
 const DB_LOG = path.join(__dirname, 'db_ticks.log');
@@ -336,10 +338,10 @@ app.all("/api/predict-ondemand", async (req, res) => {
       const d = new Date(lastRow.datetime);
       if (!isNaN(d.getTime())) {
         const pad = n => String(n).padStart(2, "0");
-        const fromDateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        const fromDateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${d.getHours()}:${pad(d.getMinutes())}`;
         
         const now = new Date();
-        const toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        const toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${now.getHours()}:${pad(now.getMinutes())}`;
         
         if (fromDateStr < toDateStr) {
           try {
@@ -452,6 +454,12 @@ async function start() {
     // Start silent 5-minute background gap filler
     startBackgroundGapFiller();
 
+    // Start daily prediction engine (runs at 09:20)
+    startPredictionEngine();
+
+    // Start post-market calculations engine (runs at 15:45)
+    startPostMarketCalculations();
+
     // Clean old ticks every 30 minutes
     setInterval(() => {
       db.cleanOldTicks(1).catch((err) =>
@@ -507,6 +515,15 @@ async function startGlobalTickCollector() {
   // Run infinite loop
   (async function loop() {
     while (true) {
+      const now = new Date();
+      const timeStr = `${padDate(now.getHours())}:${padDate(now.getMinutes())}:${padDate(now.getSeconds())}`;
+      
+      if (timeStr > "15:30:00") {
+        console.log("[GlobalTickCollector] Market closed (after 15:30). Sleeping for 1 minute...");
+        await new Promise(r => setTimeout(r, 60000));
+        continue;
+      }
+
       const currentBucketTime = getFiveMinuteBucketStart(Date.now()).getTime();
 
       for (const chunk of chunks) {
@@ -541,9 +558,12 @@ async function startGlobalTickCollector() {
                   if (fs.existsSync(csvPath)) {
                     const lastWritten = global.lastWrittenTimestamp[sym] || "";
                     if (oldBucket.datetime > lastWritten) {
-                      const csvLine = `${oldBucket.datetime},${oldBucket.open},${oldBucket.high},${oldBucket.low},${oldBucket.close},${oldBucket.volume},0,0,0,0,0\n`;
-                      fs.appendFileSync(csvPath, csvLine);
-                      global.lastWrittenTimestamp[sym] = oldBucket.datetime;
+                      const timePart = oldBucket.datetime.split(' ')[1];
+                      if (timePart >= "09:15:00" && timePart <= "15:25:00") {
+                        const csvLine = `${oldBucket.datetime},${oldBucket.open},${oldBucket.high},${oldBucket.low},${oldBucket.close},${oldBucket.volume},0,0,0,0,0\n`;
+                        fs.appendFileSync(csvPath, csvLine);
+                        global.lastWrittenTimestamp[sym] = oldBucket.datetime;
+                      }
                     }
                   }
                 }
@@ -631,20 +651,23 @@ async function startBackgroundGapFiller() {
                       const candleDtStr = `${candleDate.getFullYear()}-${pad(candleDate.getMonth()+1)}-${pad(candleDate.getDate())} ${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
                       
                       if (candleDate > d) {
-                        const newRow = {
-                          datetime: candleDtStr,
-                          exchange_code: "NSE",
-                          stock_code: symbol,
-                          open: parseFloat(candle[1]),
-                          high: parseFloat(candle[2]),
-                          low: parseFloat(candle[3]),
-                          close: parseFloat(candle[4]),
-                          volume: parseInt(candle[5], 10),
-                        };
-                        const csvLine = `${candleDtStr},${newRow.open},${newRow.high},${newRow.low},${newRow.close},${newRow.volume},0,0,0,0,0\n`;
-                        fs.appendFileSync(csvPath, csvLine);
-                        global.lastWrittenTimestamp[symbol] = candleDtStr;
-                        addedCount++;
+                        const timePart = candleDtStr.split(' ')[1];
+                        if (timePart >= "09:15:00" && timePart <= "15:25:00") {
+                          const newRow = {
+                            datetime: candleDtStr,
+                            exchange_code: "NSE",
+                            stock_code: symbol,
+                            open: parseFloat(candle[1]),
+                            high: parseFloat(candle[2]),
+                            low: parseFloat(candle[3]),
+                            close: parseFloat(candle[4]),
+                            volume: parseInt(candle[5], 10),
+                          };
+                          const csvLine = `${candleDtStr},${newRow.open},${newRow.high},${newRow.low},${newRow.close},${newRow.volume},0,0,0,0,0\n`;
+                          fs.appendFileSync(csvPath, csvLine);
+                          global.lastWrittenTimestamp[symbol] = candleDtStr;
+                          addedCount++;
+                        }
                       }
                     }
                   }
