@@ -9,6 +9,7 @@ const cors = require("cors");
 const { generate_payload } = require("./calculate_parameters.js");
 const db = require("./db");
 const tickCollector = require("./tick-collector");
+const { startPredictionEngine } = require("./send_predictions.js");
 
 const app = express();
 app.use(cors());
@@ -20,15 +21,6 @@ const startupState = {
   databaseReady: false,
   startupError: null,
 };
-
-console.log(
-  "Angel Client Code:",
-  process.env.ANGEL_CLIENT_CODE,
-  "API Key:",
-  process.env.ANGEL_API_KEY,
-  "Token:",
-  process.env.ANGELONE_BOSCHLTD_TOKEN,
-);
 
 // We no longer rely exclusively on the static predictData.json file.
 // We will generate the historical data dynamically using calculate_parameters.js generate_payload.
@@ -56,6 +48,121 @@ let jwtToken = null;
 let jwtTokenExpiry = 0;
 
 const csvCache = {}; // Cache for parsed CSV data
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateTime(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function getFiveMinuteBucketStart(date) {
+  const d = new Date(date);
+  d.setSeconds(0, 0);
+  d.setMinutes(Math.floor(d.getMinutes() / 5) * 5);
+  return d;
+}
+
+async function loadHistoricalFromCsv(symbol) {
+  if (csvCache[symbol]) {
+    return csvCache[symbol];
+  }
+
+  const csvPath = path.join(__dirname, "historical_csv", `${symbol}.csv`);
+  if (!fs.existsSync(csvPath)) {
+    return [];
+  }
+
+  const formattedHistorical = [];
+  const csvContent = fs.readFileSync(csvPath, "utf-8");
+  const lines = csvContent
+    .split("\n")
+    .filter((line) => line.trim().length > 0);
+  const normalizeCsvValue = (value) => value.trim().replaceAll('"', "");
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols.length >= 6) {
+      formattedHistorical.push({
+        datetime: normalizeCsvValue(cols[0]),
+        exchange_code: "NSE",
+        stock_code: symbol,
+        open: parseFloat(normalizeCsvValue(cols[1])),
+        high: parseFloat(normalizeCsvValue(cols[2])),
+        low: parseFloat(normalizeCsvValue(cols[3])),
+        close: parseFloat(normalizeCsvValue(cols[4])),
+        volume: parseInt(normalizeCsvValue(cols[5]), 10),
+      });
+    }
+  }
+
+  csvCache[symbol] = formattedHistorical;
+  return formattedHistorical;
+}
+
+async function loadHistoricalFromAngelOne(symbol, token, interval) {
+  const now = new Date();
+  const from = new Date(now);
+  const lookbackDays = Number(process.env.HISTORY_LOOKBACK_DAYS || 6);
+
+  from.setDate(from.getDate() - lookbackDays);
+  from.setHours(9, 15, 0, 0);
+
+  const fromdate = `${from.getFullYear()}-${pad2(from.getMonth() + 1)}-${pad2(from.getDate())} 09:15`;
+  const todate = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+
+  const historicalRes = await smartApi.getCandleData({
+    exchange: "NSE",
+    symboltoken: token,
+    interval,
+    fromdate,
+    todate,
+  });
+
+  const currentBucketStart = formatDateTime(getFiveMinuteBucketStart(now));
+  const candles = Array.isArray(historicalRes?.data) ? historicalRes.data : [];
+
+  return candles
+    .map((candle) => ({
+      datetime: formatDateTime(new Date(candle[0])),
+      exchange_code: "NSE",
+      stock_code: symbol,
+      open: parseFloat(candle[1]),
+      high: parseFloat(candle[2]),
+      low: parseFloat(candle[3]),
+      close: parseFloat(candle[4]),
+      volume: parseInt(candle[5], 10),
+    }))
+    .filter((row) => row.datetime < currentBucketStart);
+}
+
+async function loadHistoricalData(symbol, token, interval) {
+  try {
+    const csvData = await loadHistoricalFromCsv(symbol);
+    if (csvData.length > 0) {
+      return csvData;
+    }
+  } catch (err) {
+    console.warn(`[History] CSV load failed for ${symbol}:`, err.message);
+  }
+
+  console.warn(
+    `[History] CSV missing for ${symbol}. Falling back to Angel One historical candles.`,
+  );
+
+  try {
+    const marketHistory = await loadHistoricalFromAngelOne(symbol, token, interval);
+    console.log(
+      `[History] Loaded ${marketHistory.length} fallback candles from Angel One for ${symbol}.`,
+    );
+    return marketHistory;
+  } catch (err) {
+    console.warn(`[History] Angel One fallback failed for ${symbol}:`, err.message);
+    return [];
+  }
+}
 
 let scripMaster = null;
 async function getTokenForSymbol(symbol) {
@@ -220,10 +327,8 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  const hasStartupError = Boolean(startupState.startupError);
-
-  res.status(hasStartupError ? 503 : 200).json({
-    status: hasStartupError
+  res.status(200).json({
+    status: startupState.startupError
       ? "degraded"
       : startupState.databaseReady
         ? "ready"
@@ -232,6 +337,16 @@ app.get("/health", (req, res) => {
     startupError: startupState.startupError,
     collectors: tickCollector.getActiveCollectors(),
     uptime: process.uptime(),
+  });
+});
+
+app.get("/ready", (req, res) => {
+  const isReady = startupState.databaseReady && !startupState.startupError;
+
+  res.status(isReady ? 200 : 503).json({
+    status: isReady ? "ready" : "not-ready",
+    databaseReady: startupState.databaseReady,
+    startupError: startupState.startupError,
   });
 });
 
@@ -285,48 +400,7 @@ const forwardToPredict = async (req, res) => {
       });
     }
 
-    // Fetch historical data from local CSV
-    let formattedHistorical = [];
-    try {
-      if (csvCache[symbol]) {
-        formattedHistorical = csvCache[symbol];
-      } else {
-        const csvPath = path.join(__dirname, "historical_csv", `${symbol}.csv`);
-        if (fs.existsSync(csvPath)) {
-          const csvContent = fs.readFileSync(csvPath, "utf-8");
-          const lines = csvContent
-            .split("\n")
-            .filter((line) => line.trim().length > 0);
-
-          // Skip header (first line)
-          for (let i = 1; i < lines.length; i++) {
-            const cols = lines[i].split(",");
-            if (cols.length >= 6) {
-              formattedHistorical.push({
-                datetime: cols[0].trim(),
-                exchange_code: "NSE",
-                stock_code: symbol,
-                open: parseFloat(cols[1]),
-                high: parseFloat(cols[2]),
-                low: parseFloat(cols[3]),
-                close: parseFloat(cols[4]),
-                volume: parseInt(cols[5], 10),
-              });
-            }
-          }
-          csvCache[symbol] = formattedHistorical;
-          console.log(
-            `[Cache] Loaded and cached CSV for ${symbol}. Total candles: ${formattedHistorical.length}`,
-          );
-        } else {
-          console.warn(
-            `[Warning] No CSV found for symbol ${symbol} at ${csvPath}`,
-          );
-        }
-      }
-    } catch (err) {
-      console.error(`Error reading CSV for ${symbol}:`, err.message);
-    }
+    const formattedHistorical = await loadHistoricalData(symbol, token, interval);
 
     // Generate indicators
     let boslim = await generate_payload(formattedHistorical);
@@ -494,7 +568,15 @@ app.get("/api/predictResult", async (req, res) => {
   try {
     const logsDir = path.join(__dirname, "prediction logs");
     if (!fs.existsSync(logsDir)) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "Prediction log directory not found on this server.",
+      });
     }
 
     const files = fs
@@ -508,7 +590,15 @@ app.get("/api/predictResult", async (req, res) => {
       );
 
     if (files.length === 0) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "No prediction log files found yet.",
+      });
     }
 
     // Get the most recently modified file
@@ -523,14 +613,26 @@ app.get("/api/predictResult", async (req, res) => {
     }
 
     if (!latestFile) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "Prediction log files were found, but no latest file could be selected.",
+      });
     }
 
     const filePath = path.join(logsDir, latestFile);
     const content = fs.readFileSync(filePath, "utf-8");
     const lines = content.split("\n");
 
-    const results = [];
+    const allEntries = [];
+    const signalEntries = [];
+    let parsedLines = 0;
+    let ignoredLines = 0;
+    const signalOnly = req.query.onlySignals === "true";
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -543,25 +645,48 @@ app.get("/api/predictResult", async (req, res) => {
         try {
           const tick = JSON.parse(match[2]);
           const response = JSON.parse(match[3]);
+          parsedLines += 1;
 
-          if (
-            response &&
-            response.signal !== null &&
-            response.signal !== undefined
-          ) {
-            results.push({
-              symbol,
-              tick,
-              response,
-            });
+          const entry = {
+            symbol,
+            tick,
+            response,
+            hasSignal:
+              response &&
+              response.signal !== null &&
+              response.signal !== undefined,
+          };
+
+          allEntries.push(entry);
+
+          if (entry.hasSignal) {
+            signalEntries.push(entry);
           }
         } catch (e) {
-          // ignore parse errors
+          ignoredLines += 1;
         }
+      } else {
+        ignoredLines += 1;
       }
     }
 
-    return res.json({ success: true, data: results, logFile: latestFile });
+    return res.json({
+      success: true,
+      data: signalOnly ? signalEntries : allEntries,
+      signals: signalEntries,
+      totalEntries: allEntries.length,
+      signalEntries: signalEntries.length,
+      parsedLines,
+      ignoredLines,
+      showing: signalOnly ? "signals" : "all",
+      logFile: latestFile,
+      message:
+        allEntries.length === 0
+          ? "Prediction log file exists, but no entries could be parsed."
+          : signalEntries.length === 0
+            ? "Entries were found, but none contained a trade signal."
+            : undefined,
+    });
   } catch (err) {
     console.error("Error in /api/predictResult:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -576,6 +701,17 @@ function startHttpServer() {
 }
 
 async function bootstrapBackground() {
+  if (!db.isConfigured()) {
+    console.warn(
+      "[Startup] PostgreSQL environment variables are missing. Starting HTTP server without database initialization.",
+    );
+    if (process.env.ENABLE_PREDICTION_ENGINE !== "false") {
+      console.log("[Startup] Starting prediction engine without PostgreSQL.");
+      startPredictionEngine();
+    }
+    return;
+  }
+
   try {
     console.log("[Startup] Initializing PostgreSQL in background...");
     await db.initDB();
@@ -584,6 +720,11 @@ async function bootstrapBackground() {
   } catch (err) {
     startupState.startupError = err.message;
     console.error("❌ Failed to connect to PostgreSQL Database:", err.message);
+  }
+
+  if (process.env.ENABLE_PREDICTION_ENGINE !== "false") {
+    console.log("[Startup] Starting prediction engine for this server.");
+    startPredictionEngine();
   }
 }
 

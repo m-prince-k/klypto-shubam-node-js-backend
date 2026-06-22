@@ -1,2 +1,16 @@
 .env
-node_modules
+node_modules/
+calculated_parameters/
+extractJson/
+prediction logs/
+live_ticks.db
+live_ticks.db-shm
+live_ticks.db-wal
+jwt.txt
+payload_*.json
+angelone_ticks.log
+db_ticks.log
+tick_collector.log
+last_prediction_date.txt
+last_calculated_date.txt
+today_915_candles.csv
