@@ -3,6 +3,7 @@ const path = require("path");
 const axios = require("axios");
 const postgresDb = require("./db");
 const csv = require("csv-parser");
+const { performCalculations } = require("./process_calculations.js");
 
 // Use the folder the user specified for JSON payloads
 const JSON_FOLDER = path.join(__dirname, "extractJson");
@@ -10,6 +11,7 @@ const PREDICT_URL = "http://43.205.133.183:8000/predict";
 const LOG_DIR = path.join(__dirname, "prediction logs");
 let LOG_FILE = path.join(LOG_DIR, "predictions_response.log");
 let PAYLOAD_LOG = path.join(LOG_DIR, "prediction_payloads.log");
+let predictionEngineStarted = false;
 
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) {
@@ -37,13 +39,14 @@ function getLatestTick(symbol) {
         ORDER BY timestamp DESC LIMIT 1
       `;
       const res = await postgresDb.query(query, [symbol]);
-      if (res.rows && res.rows.length > 0) {
+      if (res && res.rows && res.rows.length > 0) {
         resolve(res.rows[0]);
       } else {
         resolve(null);
       }
     } catch (err) {
-      reject(err);
+      console.warn(`[Prediction] Could not read live tick for ${symbol}: ${err.message}`);
+      resolve(null);
     }
   });
 }
@@ -178,15 +181,34 @@ async function main() {
   console.log("Starting prediction job...");
   ensureLogDir();
 
-  // Check if the directory exists
   if (!fs.existsSync(JSON_FOLDER)) {
-    console.error(`Directory not found: ${JSON_FOLDER}`);
+    fs.mkdirSync(JSON_FOLDER, { recursive: true });
+  }
+
+  let files = fs.readdirSync(JSON_FOLDER).filter((f) => f.endsWith(".json"));
+  if (files.length === 0) {
+    console.warn(
+      `[Prediction] ${JSON_FOLDER} is empty. Generating prediction inputs from historical CSV files...`,
+    );
+
+    try {
+      await performCalculations();
+    } catch (err) {
+      console.error(
+        `[Prediction] Failed to generate extractJson data: ${err.message}`,
+      );
+    }
+
+    files = fs.readdirSync(JSON_FOLDER).filter((f) => f.endsWith(".json"));
+  }
+
+  if (files.length === 0) {
+    console.warn(
+      `[Prediction] No JSON files available in ${JSON_FOLDER}. Skipping this prediction cycle.`,
+    );
     return;
   }
 
-  // Postgres connection is handled by db.js pool
-
-  const files = fs.readdirSync(JSON_FOLDER).filter((f) => f.endsWith(".json"));
   console.log(`Found ${files.length} JSON files.`);
 
   // Initialize log file
@@ -238,6 +260,11 @@ async function loop() {
 }
 
 function startPredictionEngine() {
+  if (predictionEngineStarted) {
+    return;
+  }
+
+  predictionEngineStarted = true;
   console.log("Starting Background Prediction Engine. Waiting for 09:20 every day...");
   loop().catch(console.error);
 }

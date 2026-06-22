@@ -9,6 +9,7 @@ const cors = require("cors");
 const { generate_payload } = require("./calculate_parameters.js");
 const db = require("./db");
 const tickCollector = require("./tick-collector");
+const { startPredictionEngine } = require("./send_predictions.js");
 
 const app = express();
 app.use(cors());
@@ -704,6 +705,10 @@ async function bootstrapBackground() {
     console.warn(
       "[Startup] PostgreSQL environment variables are missing. Starting HTTP server without database initialization.",
     );
+    if (process.env.ENABLE_PREDICTION_ENGINE !== "false") {
+      console.log("[Startup] Starting prediction engine without PostgreSQL.");
+      startPredictionEngine();
+    }
     return;
   }
 
@@ -715,6 +720,11 @@ async function bootstrapBackground() {
   } catch (err) {
     startupState.startupError = err.message;
     console.error("❌ Failed to connect to PostgreSQL Database:", err.message);
+  }
+
+  if (process.env.ENABLE_PREDICTION_ENGINE !== "false") {
+    console.log("[Startup] Starting prediction engine for this server.");
+    startPredictionEngine();
   }
 }
 
