@@ -567,7 +567,15 @@ app.get("/api/predictResult", async (req, res) => {
   try {
     const logsDir = path.join(__dirname, "prediction logs");
     if (!fs.existsSync(logsDir)) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "Prediction log directory not found on this server.",
+      });
     }
 
     const files = fs
@@ -581,7 +589,15 @@ app.get("/api/predictResult", async (req, res) => {
       );
 
     if (files.length === 0) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "No prediction log files found yet.",
+      });
     }
 
     // Get the most recently modified file
@@ -596,14 +612,26 @@ app.get("/api/predictResult", async (req, res) => {
     }
 
     if (!latestFile) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        signals: [],
+        totalEntries: 0,
+        signalEntries: 0,
+        logFile: null,
+        message: "Prediction log files were found, but no latest file could be selected.",
+      });
     }
 
     const filePath = path.join(logsDir, latestFile);
     const content = fs.readFileSync(filePath, "utf-8");
     const lines = content.split("\n");
 
-    const results = [];
+    const allEntries = [];
+    const signalEntries = [];
+    let parsedLines = 0;
+    let ignoredLines = 0;
+    const signalOnly = req.query.onlySignals === "true";
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -616,25 +644,48 @@ app.get("/api/predictResult", async (req, res) => {
         try {
           const tick = JSON.parse(match[2]);
           const response = JSON.parse(match[3]);
+          parsedLines += 1;
 
-          if (
-            response &&
-            response.signal !== null &&
-            response.signal !== undefined
-          ) {
-            results.push({
-              symbol,
-              tick,
-              response,
-            });
+          const entry = {
+            symbol,
+            tick,
+            response,
+            hasSignal:
+              response &&
+              response.signal !== null &&
+              response.signal !== undefined,
+          };
+
+          allEntries.push(entry);
+
+          if (entry.hasSignal) {
+            signalEntries.push(entry);
           }
         } catch (e) {
-          // ignore parse errors
+          ignoredLines += 1;
         }
+      } else {
+        ignoredLines += 1;
       }
     }
 
-    return res.json({ success: true, data: results, logFile: latestFile });
+    return res.json({
+      success: true,
+      data: signalOnly ? signalEntries : allEntries,
+      signals: signalEntries,
+      totalEntries: allEntries.length,
+      signalEntries: signalEntries.length,
+      parsedLines,
+      ignoredLines,
+      showing: signalOnly ? "signals" : "all",
+      logFile: latestFile,
+      message:
+        allEntries.length === 0
+          ? "Prediction log file exists, but no entries could be parsed."
+          : signalEntries.length === 0
+            ? "Entries were found, but none contained a trade signal."
+            : undefined,
+    });
   } catch (err) {
     console.error("Error in /api/predictResult:", err);
     return res.status(500).json({ success: false, error: err.message });
