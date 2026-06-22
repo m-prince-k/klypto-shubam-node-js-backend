@@ -7,10 +7,18 @@ const csv = require("csv-parser");
 // Use the folder the user specified for JSON payloads
 const JSON_FOLDER = path.join(__dirname, "extractJson");
 const PREDICT_URL = "http://43.205.133.183:8000/predict";
-let LOG_FILE = path.join(__dirname, "prediction logs", "predictions_response.log");
-let PAYLOAD_LOG = path.join(__dirname, "prediction logs", "prediction_payloads.log");
+const LOG_DIR = path.join(__dirname, "prediction logs");
+let LOG_FILE = path.join(LOG_DIR, "predictions_response.log");
+let PAYLOAD_LOG = path.join(LOG_DIR, "prediction_payloads.log");
+
+function ensureLogDir() {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+}
 
 function logPayload(msg) {
+  ensureLogDir();
   const timestamp = new Date().toISOString();
   fs.appendFileSync(PAYLOAD_LOG, `[${timestamp}] ${msg}\n`);
 }
@@ -164,10 +172,11 @@ async function main() {
   const minutes = now.getMinutes();
   const timeStr = `${hours}${minutes.toString().padStart(2, '0')}`;
   
-  LOG_FILE = path.join(__dirname, "prediction logs", `prediction${timeStr}.log`);
-  PAYLOAD_LOG = path.join(__dirname, "prediction logs", `prediction_payloads${timeStr}.log`);
+  LOG_FILE = path.join(LOG_DIR, `prediction${timeStr}.log`);
+  PAYLOAD_LOG = path.join(LOG_DIR, `prediction_payloads${timeStr}.log`);
 
   console.log("Starting prediction job...");
+  ensureLogDir();
 
   // Check if the directory exists
   if (!fs.existsSync(JSON_FOLDER)) {

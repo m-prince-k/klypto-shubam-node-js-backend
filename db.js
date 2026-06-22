@@ -1,21 +1,40 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  user: process.env.USER_NAME || process.env.DB_USER,
-  host: process.env.IP || process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.PASSWORD || process.env.DB_PASSWORD || process.env.DB_PASS,
-  port: Number(process.env.DB_PORT || 5432), // Allows overriding default port
+const connectionString = process.env.DATABASE_URL;
+const poolBaseConfig = {
   max: Number(process.env.DB_POOL_MAX || 10),
   idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 10000),
   connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000),
   ssl: process.env.DB_SSL === "false" ? false : {
     rejectUnauthorized: false // Often required for remote databases
   }
+};
+
+const pool = new Pool(connectionString ? {
+  ...poolBaseConfig,
+  connectionString,
+} : {
+  ...poolBaseConfig,
+  user: process.env.USER_NAME || process.env.DB_USER,
+  host: process.env.IP || process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  password: process.env.PASSWORD || process.env.DB_PASSWORD || process.env.DB_PASS,
+  port: Number(process.env.DB_PORT || 5432), // Allows overriding default port
 });
 
 let isPoolClosed = false;
+
+function isConfigured() {
+  if (connectionString) return true;
+
+  return Boolean(
+    (process.env.USER_NAME || process.env.DB_USER) &&
+      (process.env.IP || process.env.DB_HOST) &&
+      process.env.DB_NAME &&
+      (process.env.PASSWORD || process.env.DB_PASSWORD || process.env.DB_PASS),
+  );
+}
 
 function padDate(n) {
   return String(n).padStart(2, "0");
@@ -163,5 +182,6 @@ module.exports = {
   closeDB,
   getFiveMinuteBucket,
   formatTimestamp,
+  isConfigured,
   query: (text, params) => isPoolClosed ? null : pool.query(text, params),
 };
