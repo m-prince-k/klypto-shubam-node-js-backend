@@ -13,6 +13,7 @@ const angelone = require("./angelone-client");
 const symbols = require("./symbols.js");
 const { startPredictionEngine } = require("./send_predictions.js");
 const { startPostMarketCalculations } = require("./process_calculations.js");
+const { fetchAndStore915Candles } = require("./fetch_915_candles.js");
 
 const ANGELONE_LOG = path.join(__dirname, 'angelone_ticks.log');
 const DB_LOG = path.join(__dirname, 'db_ticks.log');
@@ -498,7 +499,10 @@ async function start() {
     startPredictionEngine();
 
     // Start post-market calculations engine (runs at 15:45)
-    // startPostMarketCalculations(); // Disabled as per request
+    startPostMarketCalculations(); 
+
+    // Start 9:15 AM database sync (runs at 09:16)
+    startPremarket915Engine();
 
     // Clean old ticks every 30 minutes
     setInterval(() => {
@@ -632,6 +636,40 @@ async function startGlobalTickCollector() {
         // Wait 1000ms between batch requests to reduce Angel One load
         await new Promise(r => setTimeout(r, 1000));
       }
+    }
+  })();
+}
+
+function startPremarket915Engine() {
+  const LAST_RUN_FILE = path.join(__dirname, 'last_915_fetch_date.txt');
+  let lastRunDate = null;
+  if (fs.existsSync(LAST_RUN_FILE)) {
+    lastRunDate = fs.readFileSync(LAST_RUN_FILE, 'utf8').trim();
+  }
+
+  console.log("Starting Pre-Market 9:15 Engine. Waiting for 09:16 every day...");
+
+  (async function loop() {
+    while (true) {
+      const now = new Date();
+      const h = now.getHours();
+      const m = now.getMinutes();
+      const dateStr = now.toDateString();
+
+      // Run exactly at or right after 09:16 (we wait 1 min to ensure candle is fully closed at 09:15)
+      if ((h > 9 || (h === 9 && m >= 16)) && lastRunDate !== dateStr) {
+        console.log(`Time is ${h}:${m}, >= 09:16. Fetching and storing 9:15 AM candles for today...`);
+        try {
+          await fetchAndStore915Candles();
+          lastRunDate = dateStr;
+          fs.writeFileSync(LAST_RUN_FILE, dateStr);
+        } catch (err) {
+          console.error("Error in 9:15 fetch cycle:", err);
+        }
+      }
+
+      // Sleep for 1 minute
+      await new Promise(r => setTimeout(r, 60000));
     }
   })();
 }

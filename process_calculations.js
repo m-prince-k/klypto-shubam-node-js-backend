@@ -3,6 +3,7 @@ const path = require('path');
 const csv = require('csv-parser');
 const { generate_payload } = require('./calculate_parameters.js');
 const angelone = require('./angelone-client.js');
+const { fetchTodayAll } = require('./fetch_today_all.js');
 
 const HIST_FOLDER = path.join(__dirname, 'historical_csv');
 const OUT_CSV_FOLDER = path.join(__dirname, 'calculated_parameters');
@@ -275,6 +276,9 @@ async function loop() {
             emptyFolder(OUT_JSON_FOLDER);
             
             try {
+                console.log("=> Running fetchTodayAll()...");
+                await fetchTodayAll();
+                
                 await performCalculations();
                 lastProcessedDate = currentDateStr; // Mark as done for today in memory
                 fs.writeFileSync(LAST_RUN_FILE, currentDateStr); // Save it so restarts don't re-trigger
