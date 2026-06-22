@@ -15,6 +15,8 @@ const pool = new Pool({
   }
 });
 
+let isPoolClosed = false;
+
 function padDate(n) {
   return String(n).padStart(2, "0");
 }
@@ -77,6 +79,7 @@ function initDB() {
 
 function insertTick(symbol, open, high, low, close, volume, timestampStr) {
   return new Promise(async (resolve, reject) => {
+    if (isPoolClosed) return resolve(null);
     try {
       const query = `
         INSERT INTO ticks (symbol, open, high, low, close, volume, timestamp)
@@ -93,6 +96,7 @@ function insertTick(symbol, open, high, low, close, volume, timestampStr) {
 
 function upsertCandle(symbol, open, high, low, close, volume, timestampStr) {
   return new Promise(async (resolve, reject) => {
+    if (isPoolClosed) return resolve(null);
     try {
       const query = `
         INSERT INTO candles_5m (symbol, open, high, low, close, volume, timestamp) 
@@ -139,6 +143,8 @@ function getDB() {
 
 function closeDB() {
   return new Promise((resolve, reject) => {
+    if (isPoolClosed) return resolve();
+    isPoolClosed = true;
     pool.end((err) => {
       if (err) return reject(err);
       resolve();
@@ -157,5 +163,5 @@ module.exports = {
   closeDB,
   getFiveMinuteBucket,
   formatTimestamp,
-  query: (text, params) => pool.query(text, params),
+  query: (text, params) => isPoolClosed ? null : pool.query(text, params),
 };
