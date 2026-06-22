@@ -581,7 +581,7 @@ async function startGlobalTickCollector() {
               const lastT = global.liveTicksCache[sym];
               if (!lastT || lastT.price !== price || lastT.volume !== vol) {
                 global.liveTicksCache[sym] = { price, volume: vol };
-                await db.insertTick(sym, price, vol, formatTimestamp(new Date()));
+                await db.insertTick(sym, price, price, price, price, vol, formatTimestamp(new Date()));
               }
 
               // Initialize or update the cache

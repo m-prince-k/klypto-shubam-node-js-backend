@@ -192,11 +192,7 @@ async function main() {
     await Promise.all(batch.map(file => processFile(file)));
   }
 
-  postgresDb.closeDB().then(() => {
-    console.log("Finished prediction job iteration.");
-  }).catch(err => {
-    console.error("Error closing DB:", err);
-  });
+  console.log("Finished prediction job iteration.");
 }
 
 let lastRunDate = null;
