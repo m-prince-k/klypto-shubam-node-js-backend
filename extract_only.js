@@ -29,8 +29,12 @@ function padMissingCandles(data) {
     }
     
     const dataMap = new Map();
+    let maxDatetime = "";
     data.forEach(row => {
         dataMap.set(row.datetime, row);
+        if (row.datetime > maxDatetime) {
+            maxDatetime = row.datetime;
+        }
     });
 
     const paddedData = [];
@@ -48,6 +52,9 @@ function padMissingCandles(data) {
 
         for (const timeStr of times) {
             const dt = `${day} ${timeStr}`;
+            if (dt > maxDatetime) {
+                break; // Stop padding if we are in the future
+            }
             if (dataMap.has(dt)) {
                 lastRow = dataMap.get(dt);
                 paddedData.push(lastRow);

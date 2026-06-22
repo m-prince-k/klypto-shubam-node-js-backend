@@ -375,8 +375,8 @@ app.all("/api/predict-ondemand", async (req, res) => {
                       volume: parseInt(candle[5], 10),
                     };
                     rawData.push(newRow);
-                    const csvLine = `${candleDtStr},${newRow.open},${newRow.high},${newRow.low},${newRow.close},${newRow.volume},0,0,0,0,0\n`;
-                    fs.appendFileSync(csvPath, csvLine);
+                    const csvLine = `"${candleDtStr}","NSE","${symbol}","${newRow.open}","${newRow.high}","${newRow.low}","${newRow.close}","${newRow.volume}"\n`;
+                    // fs.appendFileSync(csvPath, csvLine); // Disabled as per request
                   }
                 }
               }
@@ -498,7 +498,7 @@ async function start() {
     startPredictionEngine();
 
     // Start post-market calculations engine (runs at 15:45)
-    startPostMarketCalculations();
+    // startPostMarketCalculations(); // Disabled as per request
 
     // Clean old ticks every 30 minutes
     setInterval(() => {
@@ -590,13 +590,14 @@ async function startGlobalTickCollector() {
                   // A 5-minute bucket has just closed. Write it directly to CSV!
                   const oldBucket = ohlcvCache[sym];
                   const csvPath = path.join(__dirname, "historical_csv", `${sym}.csv`);
-                  if (fs.existsSync(csvPath)) {
+                  global.gapFillerCaughtUp = global.gapFillerCaughtUp || {};
+                  if (fs.existsSync(csvPath) && global.gapFillerCaughtUp[sym]) {
                     const lastWritten = global.lastWrittenTimestamp[sym] || "";
                     if (oldBucket.datetime > lastWritten) {
                       const timePart = oldBucket.datetime.split(' ')[1];
                       if (timePart >= "09:15:00" && timePart <= "15:25:00") {
-                        const csvLine = `${oldBucket.datetime},${oldBucket.open},${oldBucket.high},${oldBucket.low},${oldBucket.close},${oldBucket.volume},0,0,0,0,0\n`;
-                        fs.appendFileSync(csvPath, csvLine);
+                        const csvLine = `"${oldBucket.datetime}","NSE","${sym}","${oldBucket.open}","${oldBucket.high}","${oldBucket.low}","${oldBucket.close}","${oldBucket.volume}"\n`;
+                        // fs.appendFileSync(csvPath, csvLine); // Disabled as per request
                         global.lastWrittenTimestamp[sym] = oldBucket.datetime;
                       }
                     }
@@ -698,8 +699,8 @@ async function startBackgroundGapFiller() {
                             close: parseFloat(candle[4]),
                             volume: parseInt(candle[5], 10),
                           };
-                          const csvLine = `${candleDtStr},${newRow.open},${newRow.high},${newRow.low},${newRow.close},${newRow.volume},0,0,0,0,0\n`;
-                          fs.appendFileSync(csvPath, csvLine);
+                          const csvLine = `"${candleDtStr}","NSE","${symbol}","${newRow.open}","${newRow.high}","${newRow.low}","${newRow.close}","${newRow.volume}"\n`;
+                          // fs.appendFileSync(csvPath, csvLine); // Disabled as per request
                           global.lastWrittenTimestamp[symbol] = candleDtStr;
                           addedCount++;
                         }
@@ -708,6 +709,9 @@ async function startBackgroundGapFiller() {
                   }
                 }
               }
+              // Mark this symbol as caught up so live tick collector can safely append
+              global.gapFillerCaughtUp = global.gapFillerCaughtUp || {};
+              global.gapFillerCaughtUp[symbol] = true;
             }
           }
         } catch (e) {

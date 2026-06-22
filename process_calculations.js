@@ -32,6 +32,11 @@ function padMissingCandles(data) {
         }
     }
     
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+    const currentTimeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:00`;
+    
     const dataMap = new Map();
     data.forEach(row => {
         dataMap.set(row.datetime, row);
@@ -51,6 +56,10 @@ function padMissingCandles(data) {
         }
 
         for (const timeStr of times) {
+            if (day === todayStr && timeStr > currentTimeStr) {
+                // Do not pad future candles for today
+                break;
+            }
             const dt = `${day} ${timeStr}`;
             if (dataMap.has(dt)) {
                 lastRow = dataMap.get(dt);
@@ -128,6 +137,8 @@ function writeCSV(filePath, data) {
 }
 
 async function fillGapForSymbol(symbol, rawData) {
+  return rawData; // Temporarily disabled to avoid filling gaps during clean recalculation
+  
   if (rawData.length === 0) return rawData;
   const lastRow = rawData[rawData.length - 1];
   let lastDt = lastRow.datetime;

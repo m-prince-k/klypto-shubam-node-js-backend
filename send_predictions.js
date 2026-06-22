@@ -25,6 +25,7 @@ function getLatestTick(symbol) {
         WHERE symbol = $1 
           AND EXTRACT(HOUR FROM timestamp) = 9 
           AND EXTRACT(MINUTE FROM timestamp) = 15
+          AND DATE(timestamp) = CURRENT_DATE
         ORDER BY timestamp DESC LIMIT 1
       `;
       const res = await postgresDb.query(query, [symbol]);
@@ -195,7 +196,12 @@ async function main() {
   console.log("Finished prediction job iteration.");
 }
 
+const LAST_RUN_FILE = path.join(__dirname, 'last_prediction_date.txt');
 let lastRunDate = null;
+if (fs.existsSync(LAST_RUN_FILE)) {
+  lastRunDate = fs.readFileSync(LAST_RUN_FILE, 'utf8').trim();
+}
+
 async function loop() {
   while (true) {
     const now = new Date();
@@ -209,11 +215,12 @@ async function loop() {
       try {
         await main();
         lastRunDate = dateStr;
+        fs.writeFileSync(LAST_RUN_FILE, dateStr);
       } catch (err) {
         console.error("Error in prediction cycle:", err);
       }
     } else {
-      console.log(`Time is ${h}:${m}. Not time yet or already run today. Skipping execution.`);
+      // console.log(`Time is ${h}:${m}. Not time yet or already run today. Skipping execution.`);
     }
 
     // Sleep for 1 minute
