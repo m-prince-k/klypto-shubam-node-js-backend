@@ -156,11 +156,21 @@ function getDB() {
   return pool;
 }
 
+let isPoolClosed = false;
 function closeDB() {
   return new Promise((resolve, reject) => {
-    pool.end((err) => {
-      if (err) return reject(err);
-      resolve();
+    if (isPoolClosed) {
+      return resolve(); // Already closed
+    }
+    isPoolClosed = true;
+    pool.end(err => {
+      if (err) {
+        console.error("Error closing PostgreSQL pool:", err);
+        reject(err);
+      } else {
+        console.log("PostgreSQL pool closed.");
+        resolve();
+      }
     });
   });
 }

@@ -2,11 +2,10 @@
   "name": "option-chain",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "live-predict.js",
   "scripts": {
-    "start": "nodemon index.js",
-    "live": "node live-predict.js",
-    "live:dev": "nodemon live-predict.js",
+    "start": "node live-predict.js",
+    "dev": "nodemon live-predict.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

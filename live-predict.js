@@ -408,6 +408,24 @@ app.all("/api/predict-ondemand", async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+// Predict result endpoint
+app.get("/api/predictResult", async (req, res) => {
+  try {
+    const resDB = await db.query(`
+      SELECT symbol, tick_data as tick, response_data as response 
+      FROM prediction_logs 
+      WHERE DATE(created_at) = CURRENT_DATE
+    `);
+    
+    // Filter to only successful signals
+    const results = resDB.rows.filter(r => r.response && r.response.signal !== null && r.response.signal !== undefined);
+    
+    return res.json({ success: true, data: results, source: 'DB' });
+  } catch (err) {
+    console.error("Error in /api/predictResult:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Health check
 app.get("/health", (req, res) => {
@@ -466,6 +484,29 @@ async function start() {
         console.warn("[Server] Cleanup error:", err.message)
       );
     }, 30 * 60 * 1000);
+
+    // Regular interval check to clear prediction logs at exactly 15:45 (3:45 PM)
+    setInterval(() => {
+      const now = new Date();
+      if (now.getHours() === 15 && now.getMinutes() === 45) {
+        try {
+          const logsDir = require('path').join(__dirname, "prediction logs");
+          if (require('fs').existsSync(logsDir)) {
+            const files = require('fs').readdirSync(logsDir);
+            let cleared = false;
+            for (const file of files) {
+              if (file.endsWith(".log") && file !== "predictions_response.log") {
+                require('fs').unlinkSync(require('path').join(logsDir, file));
+                cleared = true;
+              }
+            }
+            if (cleared) console.log("[Server] ✅ Cleared prediction logs at 3:45 PM.");
+          }
+        } catch (err) {
+          console.error("[Server] ❌ Error clearing prediction logs:", err);
+        }
+      }
+    }, 60 * 1000);
 
     app.listen(PORT, () => {
       console.log(`[Server] Live Predict server running on port ${PORT}`);
@@ -546,7 +587,7 @@ async function startGlobalTickCollector() {
               const lastT = global.liveTicksCache[sym];
               if (!lastT || lastT.price !== price || lastT.volume !== vol) {
                 global.liveTicksCache[sym] = { price, volume: vol };
-                await db.insertTick(sym, price, vol, formatTimestamp(new Date()));
+                await db.insertTick(sym, price, price, price, price, vol, formatTimestamp(new Date()));
               }
 
               // Initialize or update the cache

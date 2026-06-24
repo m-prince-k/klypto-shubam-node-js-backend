@@ -187,11 +187,7 @@ async function main() {
     await Promise.all(batch.map(record => processSymbol(record.symbol, record.historic_data.historic_data || record.historic_data)));
   }
 
-  postgresDb.closeDB().then(() => {
-    console.log("Finished prediction job iteration.");
-  }).catch(err => {
-    console.error("Error closing DB:", err);
-  });
+  console.log("Finished prediction job iteration.");
 }
 
 let lastRunDate = null;

@@ -19,6 +19,28 @@ function emptyFolder(folderPath) {
     }
 }
 
+async function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+}
+
+async function fetchWithRetry(symbol, token, interval, fromDateStr, toDateStr, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const hist = await angelone.fetchHistoricalCandles(symbol, token, interval, fromDateStr, toDateStr);
+            if (hist && hist.data) {
+                return hist;
+            }
+        } catch(e) {
+            console.log(`[Attempt ${i+1}/${retries}] Failed to fetch ${symbol}: ${e.message}`);
+            if (i < retries - 1) {
+                console.log(`Waiting 5 seconds before retry...`);
+                await sleep(5000);
+            }
+        }
+    }
+    return null;
+}
+
 async function getRawDataFromDB(symbol) {
   const pool = db.getDB();
   const res = await pool.query('SELECT datetime, open, high, low, close, volume FROM historical_candles WHERE symbol = $1 ORDER BY datetime ASC', [symbol]);
@@ -34,7 +56,7 @@ async function getRawDataFromDB(symbol) {
   }));
 }
 
-async function fillGapForSymbol(symbol, rawData) {
+async function fillGapForSymbol(symbol, rawData, toDateStr) {
   if (rawData.length === 0) return rawData;
   const lastRow = rawData[rawData.length - 1];
   let lastDt = lastRow.datetime;
@@ -45,22 +67,18 @@ async function fillGapForSymbol(symbol, rawData) {
   const pad = n => String(n).padStart(2, '0');
   const fromDateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   
-  const now = new Date();
-  let toDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const maxToDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} 15:25`;
-  if (toDateStr > maxToDateStr) {
-      toDateStr = maxToDateStr;
-  }
-  
   if (fromDateStr >= toDateStr) return rawData;
   
   try {
     const token = await angelone.getTokenForSymbol(symbol);
     if (!token) return rawData;
     
-    const hist = await angelone.fetchHistoricalCandles(symbol, token, "FIVE_MINUTE", fromDateStr, toDateStr);
+    // Robust Fetcher with Retries
+    const hist = await fetchWithRetry(symbol, token, "FIVE_MINUTE", fromDateStr, toDateStr);
+    
     if (hist && hist.data) {
         const pool = db.getDB();
+        let inserted = 0;
         for (const candle of hist.data) {
             const candleDate = new Date(candle[0]);
             const candleDtStr = `${candleDate.getFullYear()}-${pad(candleDate.getMonth()+1)}-${pad(candleDate.getDate())} ${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
@@ -83,9 +101,12 @@ async function fillGapForSymbol(symbol, rawData) {
                   VALUES ($1, $2, $3, $4, $5, $6, $7)
                   ON CONFLICT(symbol, datetime) DO NOTHING
                 `, [symbol, candleDtStr, newRow.open, newRow.high, newRow.low, newRow.close, newRow.volume]);
+                inserted++;
             }
         }
-        console.log(`Filled gaps for ${symbol}: up to ${toDateStr}`);
+        if (inserted > 0) {
+            console.log(`Filled gaps for ${symbol}: inserted ${inserted} new candles up to ${toDateStr}`);
+        }
     }
   } catch (e) {
     console.warn(`Could not fill gap for ${symbol}:`, e.message);
@@ -94,10 +115,14 @@ async function fillGapForSymbol(symbol, rawData) {
   return rawData;
 }
 
-async function processSymbol(symbol) {
+async function processSymbol(symbol, targetDateStr) {
     try {
         let rawData = await getRawDataFromDB(symbol);
-        rawData = await fillGapForSymbol(symbol, rawData);
+        
+        // Define exact max bound
+        const maxToDateStr = `${targetDateStr} 15:25`;
+        
+        rawData = await fillGapForSymbol(symbol, rawData, maxToDateStr);
         
         // Filter strictly to 09:15:00 - 15:25:00
         rawData = rawData.filter(row => {
@@ -109,16 +134,18 @@ async function processSymbol(symbol) {
         // Deep scan and calculation using existing calculate_parameters.js
         const processed = await generate_payload(rawData);
         
-        // Save last 300 rows as JSON to DB symbol_payloads
-        const last300 = processed.slice(-300);
+        // STRICTLY EXTRACT THE LAST 300 CANDLES (which will naturally end at targetDateStr 15:25)
+        const targetPayload = processed.slice(-300);
+        
+        // Save strictly 300 rows as JSON to DB symbol_payloads
         const pool = db.getDB();
         await pool.query(`
           INSERT INTO symbol_payloads (symbol, historic_data, updated_at) 
           VALUES ($1, $2, CURRENT_TIMESTAMP)
           ON CONFLICT(symbol) DO UPDATE SET historic_data = EXCLUDED.historic_data, updated_at = CURRENT_TIMESTAMP
-        `, [symbol, JSON.stringify({ historic_data: last300 })]);
+        `, [symbol, JSON.stringify({ historic_data: targetPayload })]);
         
-        console.log(`Processed ${symbol}`);
+        console.log(`Processed ${symbol}: Payload has exactly ${targetPayload.length} candles ending at ${targetDateStr} 15:25`);
     } catch(e) {
         console.error(`Error processing ${symbol}:`, e);
     }
@@ -128,13 +155,18 @@ async function performCalculations() {
     const pool = db.getDB();
     const res = await pool.query('SELECT DISTINCT symbol FROM historical_candles');
     const symbols = res.rows.map(r => r.symbol);
-    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} symbols in DB. Starting calculations...`);
+    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} symbols in DB. Starting Deep Scan and Calculations...`);
     
-    const BATCH_SIZE = 10;
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const targetDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+
+    const BATCH_SIZE = 5; // Reduced batch size for stability with retry delays
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
         const batch = symbols.slice(i, i + BATCH_SIZE);
         for (const symbol of batch) {
-            await processSymbol(symbol);
+            await processSymbol(symbol, targetDateStr);
+            await sleep(1500); // Wait between symbols to respect API limits
         }
     }
     console.log(`[${new Date().toLocaleTimeString()}] Done all calculations and saves for today!`);
@@ -162,10 +194,6 @@ async function loop() {
             console.log(`[${now.toLocaleTimeString()}] Triggering Post-Market Calculations!`);
             console.log(`=================================================`);
             
-            // Empty both directories daily before populating new ones
-            emptyFolder(OUT_CSV_FOLDER);
-            emptyFolder(OUT_JSON_FOLDER);
-            
             try {
                 await performCalculations();
                 lastProcessedDate = currentDateStr; // Mark as done for today in memory
@@ -182,8 +210,5 @@ async function loop() {
 
 module.exports = {
     startPostMarketCalculations: loop,
-    performCalculations,
-    emptyFolder,
-    OUT_CSV_FOLDER,
-    OUT_JSON_FOLDER
+    performCalculations
 };
