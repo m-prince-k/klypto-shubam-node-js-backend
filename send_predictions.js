@@ -52,24 +52,15 @@ function readJSON(filePath) {
   });
 }
 
-async function processFile(file) {
-  const symbol = path.basename(file, ".json");
-  const jsonPath = path.join(JSON_FOLDER, file);
-
+async function processSymbol(symbol, historic_data) {
   try {
     console.log(`Processing ${symbol}...`);
 
-    // 1. Read historic data from precomputed JSON
-    let parsedData = await readJSON(jsonPath);
-    let historic_data = parsedData.historic_data || [];
-    
-    if (historic_data.length === 0) {
+    if (!historic_data || historic_data.length === 0) {
       console.log(`  Skipping ${symbol}: JSON data is empty.`);
       return;
     }
 
-    // (Filtering is no longer strictly needed as process_17jun.js handles it, 
-    // but we can ensure it's precisely the last 300)
     if (historic_data.length > 300) {
       historic_data = historic_data.slice(-300);
     }
@@ -143,9 +134,17 @@ async function processFile(file) {
       }
     }
 
-    // 5. Log response
+    // 5. Log response to Database
+    const pool = postgresDb.getDB();
+    await pool.query(`
+      INSERT INTO prediction_logs (symbol, tick_data, response_data, created_at)
+      VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+    `, [symbol, tickObj, response.data]);
+    
+    // Fallback file log
     const logMsg = `[${symbol}] Payload sent. Tick: ${JSON.stringify(tickObj)} Response: ${JSON.stringify(response.data)}\n`;
     fs.appendFileSync(LOG_FILE, logMsg);
+    
     console.log(`  Success. Signal: ${JSON.stringify(response.data)}`);
   } catch (err) {
     const errorMsg = err.response
@@ -168,16 +167,12 @@ async function main() {
 
   console.log("Starting prediction job...");
 
-  // Check if the directory exists
-  if (!fs.existsSync(JSON_FOLDER)) {
-    console.error(`Directory not found: ${JSON_FOLDER}`);
-    return;
-  }
+  // Fetch data from symbol_payloads table instead of JSON files
+  const pool = postgresDb.getDB();
+  const res = await pool.query('SELECT symbol, historic_data FROM symbol_payloads');
+  const payloadRecords = res.rows;
 
-  // Postgres connection is handled by db.js pool
-
-  const files = fs.readdirSync(JSON_FOLDER).filter((f) => f.endsWith(".json"));
-  console.log(`Found ${files.length} JSON files.`);
+  console.log(`Found ${payloadRecords.length} payload records in DB.`);
 
   // Initialize log file
   fs.writeFileSync(
@@ -187,9 +182,9 @@ async function main() {
 
   // Batch process files for faster execution
   const BATCH_SIZE = 20;
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    await Promise.all(batch.map(file => processFile(file)));
+  for (let i = 0; i < payloadRecords.length; i += BATCH_SIZE) {
+    const batch = payloadRecords.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map(record => processSymbol(record.symbol, record.historic_data.historic_data || record.historic_data)));
   }
 
   postgresDb.closeDB().then(() => {

@@ -464,76 +464,16 @@ async function fetchLiveTick(symbol, reqToken) {
 
 app.get("/api/predictResult", async (req, res) => {
   try {
-    const logsDir = path.join(__dirname, "prediction logs");
-    if (!fs.existsSync(logsDir)) {
-      return res.json({ success: true, data: [] });
-    }
-
-    const files = fs
-      .readdirSync(logsDir)
-      .filter(
-        (f) =>
-          f.startsWith("prediction") &&
-          f.endsWith(".log") &&
-          !f.startsWith("prediction_payloads") &&
-          f !== "predictions_response.log",
-      );
-
-    if (files.length === 0) {
-      return res.json({ success: true, data: [] });
-    }
-
-    // Get the most recently modified file
-    let latestFile = null;
-    let maxTime = 0;
-    for (const f of files) {
-      const stats = fs.statSync(path.join(logsDir, f));
-      if (stats.mtime.getTime() > maxTime) {
-        maxTime = stats.mtime.getTime();
-        latestFile = f;
-      }
-    }
-
-    if (!latestFile) {
-      return res.json({ success: true, data: [] });
-    }
-
-    const filePath = path.join(logsDir, latestFile);
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n");
-
-    const results = [];
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      // Match the pattern: [SYMBOL] Payload sent. Tick: {tickObj} Response: {responseData}
-      const match = line.match(
-        /^\[(.*?)\] Payload sent\. Tick: (.*?) Response: (.*)$/,
-      );
-      if (match) {
-        const symbol = match[1];
-        try {
-          const tick = JSON.parse(match[2]);
-          const response = JSON.parse(match[3]);
-
-          if (
-            response &&
-            response.signal !== null &&
-            response.signal !== undefined
-          ) {
-            results.push({
-              symbol,
-              tick,
-              response,
-            });
-          }
-        } catch (e) {
-          // ignore parse errors
-        }
-      }
-    }
-
-    return res.json({ success: true, data: results, logFile: latestFile });
+    const resDB = await db.query(`
+      SELECT symbol, tick_data as tick, response_data as response 
+      FROM prediction_logs 
+      WHERE DATE(created_at) = CURRENT_DATE
+    `);
+    
+    // Filter to only successful signals
+    const results = resDB.rows.filter(r => r.response && r.response.signal !== null && r.response.signal !== undefined);
+    
+    return res.json({ success: true, data: results, source: 'DB' });
   } catch (err) {
     console.error("Error in /api/predictResult:", err);
     return res.status(500).json({ success: false, error: err.message });

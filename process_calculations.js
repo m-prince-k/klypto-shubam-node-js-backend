@@ -3,13 +3,9 @@ const path = require('path');
 const csv = require('csv-parser');
 const { generate_payload } = require('./calculate_parameters.js');
 const angelone = require('./angelone-client.js');
+const db = require('./db');
 
 const HIST_FOLDER = path.join(__dirname, 'historical_csv');
-const OUT_CSV_FOLDER = path.join(__dirname, 'calculated_parameters');
-const OUT_JSON_FOLDER = path.join(__dirname, 'extractJson');
-
-if (!fs.existsSync(OUT_CSV_FOLDER)) fs.mkdirSync(OUT_CSV_FOLDER);
-if (!fs.existsSync(OUT_JSON_FOLDER)) fs.mkdirSync(OUT_JSON_FOLDER);
 
 function emptyFolder(folderPath) {
     if (fs.existsSync(folderPath)) {
@@ -23,45 +19,19 @@ function emptyFolder(folderPath) {
     }
 }
 
-function readCSV(filePath, stock_code) {
-  return new Promise((resolve, reject) => {
-    const data = [];
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (row) => {
-        data.push({
-          datetime: row.datetime,
-          exchange_code: "NSE",
-          stock_code: stock_code,
-          open: Number(row.open),
-          high: Number(row.high),
-          low: Number(row.low),
-          close: Number(row.close),
-          volume: Number(row.volume || 0),
-        });
-      })
-      .on('end', () => resolve(data))
-      .on('error', reject);
-  });
-}
-
-function writeCSV(filePath, data) {
-  if (data.length === 0) return Promise.resolve();
-  const headers = Object.keys(data[0]);
-  const stream = fs.createWriteStream(filePath);
-  
-  stream.write(headers.join(',') + '\n');
-  for (const row of data) {
-    const line = headers.map(h => {
-        let val = row[h];
-        if (val === null || val === undefined) val = "NaN";
-        return `"${val}"`;
-    }).join(',');
-    stream.write(line + '\n');
-  }
-  stream.end();
-  
-  return new Promise(resolve => stream.on('finish', resolve));
+async function getRawDataFromDB(symbol) {
+  const pool = db.getDB();
+  const res = await pool.query('SELECT datetime, open, high, low, close, volume FROM historical_candles WHERE symbol = $1 ORDER BY datetime ASC', [symbol]);
+  return res.rows.map(r => ({
+    datetime: db.formatTimestamp(new Date(r.datetime)),
+    exchange_code: "NSE",
+    stock_code: symbol,
+    open: Number(r.open),
+    high: Number(r.high),
+    low: Number(r.low),
+    close: Number(r.close),
+    volume: Number(r.volume || 0),
+  }));
 }
 
 async function fillGapForSymbol(symbol, rawData) {
@@ -90,7 +60,7 @@ async function fillGapForSymbol(symbol, rawData) {
     
     const hist = await angelone.fetchHistoricalCandles(symbol, token, "FIVE_MINUTE", fromDateStr, toDateStr);
     if (hist && hist.data) {
-        const histCsvPath = path.join(HIST_FOLDER, `${symbol}.csv`);
+        const pool = db.getDB();
         for (const candle of hist.data) {
             const candleDate = new Date(candle[0]);
             const candleDtStr = `${candleDate.getFullYear()}-${pad(candleDate.getMonth()+1)}-${pad(candleDate.getDate())} ${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
@@ -108,9 +78,11 @@ async function fillGapForSymbol(symbol, rawData) {
                 };
                 rawData.push(newRow);
                 
-                // Append exactly matching original columns, padding with zeroes for unused metrics
-                const csvLine = `${candleDtStr},${newRow.open},${newRow.high},${newRow.low},${newRow.close},${newRow.volume},0,0,0,0,0\n`;
-                fs.appendFileSync(histCsvPath, csvLine);
+                await pool.query(`
+                  INSERT INTO historical_candles (symbol, datetime, open, high, low, close, volume) 
+                  VALUES ($1, $2, $3, $4, $5, $6, $7)
+                  ON CONFLICT(symbol, datetime) DO NOTHING
+                `, [symbol, candleDtStr, newRow.open, newRow.high, newRow.low, newRow.close, newRow.volume]);
             }
         }
         console.log(`Filled gaps for ${symbol}: up to ${toDateStr}`);
@@ -122,14 +94,9 @@ async function fillGapForSymbol(symbol, rawData) {
   return rawData;
 }
 
-async function processFile(file) {
-    const symbol = path.basename(file, '.csv');
-    const inputPath = path.join(HIST_FOLDER, file);
-    const csvOutPath = path.join(OUT_CSV_FOLDER, file);
-    const jsonOutPath = path.join(OUT_JSON_FOLDER, `${symbol}.json`);
-    
+async function processSymbol(symbol) {
     try {
-        let rawData = await readCSV(inputPath, symbol);
+        let rawData = await getRawDataFromDB(symbol);
         rawData = await fillGapForSymbol(symbol, rawData);
         
         // Filter strictly to 09:15:00 - 15:25:00
@@ -142,12 +109,14 @@ async function processFile(file) {
         // Deep scan and calculation using existing calculate_parameters.js
         const processed = await generate_payload(rawData);
         
-        // Save full calculated data to calculated_parameters (NO DATA IS DELETED)
-        await writeCSV(csvOutPath, processed);
-        
-        // Save last 300 rows as JSON to extractJson folder
+        // Save last 300 rows as JSON to DB symbol_payloads
         const last300 = processed.slice(-300);
-        fs.writeFileSync(jsonOutPath, JSON.stringify({ historic_data: last300 }, null, 2));
+        const pool = db.getDB();
+        await pool.query(`
+          INSERT INTO symbol_payloads (symbol, historic_data, updated_at) 
+          VALUES ($1, $2, CURRENT_TIMESTAMP)
+          ON CONFLICT(symbol) DO UPDATE SET historic_data = EXCLUDED.historic_data, updated_at = CURRENT_TIMESTAMP
+        `, [symbol, JSON.stringify({ historic_data: last300 })]);
         
         console.log(`Processed ${symbol}`);
     } catch(e) {
@@ -156,13 +125,16 @@ async function processFile(file) {
 }
 
 async function performCalculations() {
-    const files = fs.readdirSync(HIST_FOLDER).filter(f => f.endsWith('.csv'));
-    console.log(`[${new Date().toLocaleTimeString()}] Found ${files.length} files. Starting calculations...`);
+    const pool = db.getDB();
+    const res = await pool.query('SELECT DISTINCT symbol FROM historical_candles');
+    const symbols = res.rows.map(r => r.symbol);
+    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} symbols in DB. Starting calculations...`);
+    
     const BATCH_SIZE = 10;
-    for (let i = 0; i < files.length; i += BATCH_SIZE) {
-        const batch = files.slice(i, i + BATCH_SIZE);
-        for (const file of batch) {
-            await processFile(file);
+    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+        const batch = symbols.slice(i, i + BATCH_SIZE);
+        for (const symbol of batch) {
+            await processSymbol(symbol);
         }
     }
     console.log(`[${new Date().toLocaleTimeString()}] Done all calculations and saves for today!`);

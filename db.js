@@ -56,6 +56,32 @@ function initDB() {
           volume INTEGER NOT NULL,
           timestamp TIMESTAMP NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS historical_candles (
+          id SERIAL PRIMARY KEY,
+          symbol VARCHAR NOT NULL,
+          datetime TIMESTAMP NOT NULL,
+          open NUMERIC NOT NULL,
+          high NUMERIC NOT NULL,
+          low NUMERIC NOT NULL,
+          close NUMERIC NOT NULL,
+          volume BIGINT NOT NULL,
+          UNIQUE(symbol, datetime)
+        );
+        CREATE INDEX IF NOT EXISTS idx_historical_candles_symbol ON historical_candles(symbol);
+
+        CREATE TABLE IF NOT EXISTS symbol_payloads (
+          symbol VARCHAR PRIMARY KEY,
+          historic_data JSONB NOT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS prediction_logs (
+          id SERIAL PRIMARY KEY,
+          symbol VARCHAR NOT NULL,
+          tick_data JSONB,
+          response_data JSONB,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
       `;
       
       await client.query(createTableQuery);
