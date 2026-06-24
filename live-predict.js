@@ -468,10 +468,6 @@ async function start() {
 
     // Start global tick collector for all symbols
     startGlobalTickCollector();
-
-    // Start silent 5-minute background gap filler
-    startBackgroundGapFiller();
-
     // Start daily prediction engine (runs at 09:20)
     startPredictionEngine();
 

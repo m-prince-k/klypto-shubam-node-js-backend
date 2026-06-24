@@ -155,21 +155,30 @@ async function performCalculations() {
     const pool = db.getDB();
     const res = await pool.query('SELECT DISTINCT symbol FROM historical_candles');
     const symbols = res.rows.map(r => r.symbol);
-    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} symbols in DB. Starting Deep Scan and Calculations...`);
+    
+    // Support resumability: skip symbols already processed today
+    const resPayloads = await pool.query('SELECT symbol FROM symbol_payloads WHERE DATE(updated_at) = CURRENT_DATE');
+    const processedSymbolsSet = new Set(resPayloads.rows.map(r => r.symbol));
+    const remainingSymbols = symbols.filter(s => !processedSymbolsSet.has(s));
+
+    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} total symbols. ${processedSymbolsSet.size} already processed today. Starting Deep Scan for remaining ${remainingSymbols.length}...`);
     
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const targetDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
 
     const BATCH_SIZE = 5; // Reduced batch size for stability with retry delays
-    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-        const batch = symbols.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < remainingSymbols.length; i += BATCH_SIZE) {
+        const batch = remainingSymbols.slice(i, i + BATCH_SIZE);
         for (const symbol of batch) {
             await processSymbol(symbol, targetDateStr);
             await sleep(1500); // Wait between symbols to respect API limits
         }
     }
-    console.log(`[${new Date().toLocaleTimeString()}] Done all calculations and saves for today!`);
+    
+    console.log(`\n=================================================`);
+    console.log(`✅ [DEEP SCAN COMPLETE] symbol_payloads has been fully updated for today!`);
+    console.log(`=================================================\n`);
 }
 
 async function loop() {
