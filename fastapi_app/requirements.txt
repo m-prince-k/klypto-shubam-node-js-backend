@@ -1,10 +1,11 @@
 fastapi
 uvicorn
 pandas
-pandas-ta
 asyncpg
 databases
 aiohttp
 apscheduler
 websockets
 python-dotenv
+pyotp
+requests

@@ -3,6 +3,8 @@ const path = require("path");
 const axios = require("axios");
 const postgresDb = require("./db");
 const csv = require("csv-parser");
+const angelone = require("./angelone-client");
+const symbolsList = require("./symbols.js");
 
 // Use the folder the user specified for JSON payloads
 const JSON_FOLDER = path.join(__dirname, "extractJson");
@@ -15,7 +17,7 @@ function logPayload(msg) {
   fs.appendFileSync(PAYLOAD_LOG, `[${timestamp}] ${msg}\n`);
 }
 
-// Promise wrapper for postgres
+// Promise wrapper for postgres with API fallback
 function getLatestTick(symbol) {
   return new Promise(async (resolve, reject) => {
     try {
@@ -28,11 +30,80 @@ function getLatestTick(symbol) {
         ORDER BY timestamp DESC LIMIT 1
       `;
       const res = await postgresDb.query(query, [symbol]);
+      
+      let dbCandle = null;
       if (res.rows && res.rows.length > 0) {
-        resolve(res.rows[0]);
-      } else {
-        resolve(null);
+        dbCandle = res.rows[0];
       }
+
+      // Check if the DB candle is actually from today
+      const todayStr = new Date().toISOString().split('T')[0];
+      let isToday = false;
+      if (dbCandle) {
+         const d = new Date(dbCandle.timestamp);
+         const dbDateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+         if (dbDateStr === todayStr) {
+             isToday = true;
+         }
+      }
+
+      if (isToday) {
+        return resolve(dbCandle);
+      }
+
+      // FALLBACK: Fetch explicitly from Angel One API for today's 09:15
+      console.log(`  [${symbol}] 09:15 DB candle is missing for today. Fetching fallback from Angel One API...`);
+      const token = symbolsList[symbol];
+      
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+      const fromStr = `${dateStr} 09:15`;
+      const toStr = `${dateStr} 09:30`; // Wider bound to prevent empty array
+
+      if (token) {
+        try {
+          const hist = await angelone.fetchHistoricalCandles(symbol, token, "FIVE_MINUTE", fromStr, toStr);
+          if (hist && hist.data && hist.data.length > 0) {
+            // Find EXACTLY the 09:15 candle
+            const candle = hist.data.find(c => {
+               const d = new Date(c[0]);
+               return d.getHours() === 9 && d.getMinutes() === 15;
+            });
+            if (candle) {
+               console.log(`  [${symbol}] API Fallback fetch successful!`);
+               const fallbackCandle = {
+                 timestamp: candle[0],
+                 open: parseFloat(candle[1]),
+                 high: parseFloat(candle[2]),
+                 low: parseFloat(candle[3]),
+                 close: parseFloat(candle[4]),
+                 volume: parseInt(candle[5], 10)
+               };
+               
+               // Backfill it into DB so we have it permanently
+               const candleDate = new Date(candle[0]);
+               const candleDtStr = `${candleDate.getFullYear()}-${pad(candleDate.getMonth()+1)}-${pad(candleDate.getDate())} ${pad(candleDate.getHours())}:${pad(candleDate.getMinutes())}:00`;
+               await postgresDb.query(`
+                 INSERT INTO candles_5m (symbol, timestamp, open, high, low, close, volume)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT(symbol, timestamp) DO NOTHING
+               `, [symbol, candleDtStr, fallbackCandle.open, fallbackCandle.high, fallbackCandle.low, fallbackCandle.close, fallbackCandle.volume]);
+
+               return resolve(fallbackCandle);
+            }
+          }
+        } catch (e) {
+            console.log(`  [${symbol}] API Fallback fetch failed: ${e.message}`);
+            if (e.message.includes('403') || e.message.includes('429')) {
+                // Short wait if we hit rate limits so we don't totally spam
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+      }
+
+      // If fallback fails, return the old DB candle (from yesterday) or null
+      resolve(dbCandle);
     } catch (err) {
       reject(err);
     }
@@ -198,9 +269,10 @@ async function loop() {
     const m = now.getMinutes();
     const dateStr = now.toDateString();
 
-    // Run at or after 09:20, once per day
-    if ((h > 9 || (h === 9 && m >= 20)) && lastRunDate !== dateStr) {
-      console.log(`Time is ${h}:${m}, >= 09:20. Running prediction cycle for today...`);
+    // Run ONLY between 09:20 and 09:25 AM, once per day.
+    // This prevents it from instantly running if the server is restarted at 4 PM.
+    if (h === 9 && m >= 20 && m <= 25 && lastRunDate !== dateStr) {
+      console.log(`Time is ${h}:${String(m).padStart(2, '0')}. It is 09:20 AM! Running daily prediction cycle...`);
       try {
         await main();
         lastRunDate = dateStr;

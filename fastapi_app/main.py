@@ -88,18 +88,38 @@ async def get_status():
 
 @app.get("/api/predictResult")
 async def predict_result():
+    import json
+    
     query = """
-        SELECT symbol, tick_data, response_data, created_at 
+        SELECT DISTINCT ON (symbol) symbol, tick_data, response_data, created_at 
         FROM prediction_logs 
         WHERE DATE(created_at) = CURRENT_DATE 
-        ORDER BY created_at DESC
+        ORDER BY symbol, created_at DESC
     """
     rows = await database.fetch_all(query=query)
     
-    # Optional: logic to parse JSON response and format output as requested by frontend
-    # For now, return raw rows translated to dicts
-    results = [dict(r) for r in rows]
-    return {"status": "success", "data": results}
+    results = []
+    for r in rows:
+        # asyncpg might return strings for JSONB if not configured, or dicts.
+        tick = r["tick_data"]
+        if isinstance(tick, str):
+            try: tick = json.loads(tick)
+            except: pass
+            
+        response = r["response_data"]
+        if isinstance(response, str):
+            try: response = json.loads(response)
+            except: pass
+            
+        # Filter out null signals to match Node.js exactly
+        if response and response.get("signal") is not None:
+            results.append({
+                "symbol": r["symbol"],
+                "tick": tick,
+                "response": response
+            })
+            
+    return {"success": True, "data": results, "source": "DB"}
 
 if __name__ == "__main__":
     import uvicorn

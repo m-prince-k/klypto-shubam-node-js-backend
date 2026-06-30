@@ -151,28 +151,47 @@ async function processSymbol(symbol, targetDateStr) {
     }
 }
 
+async function updateHistoricalCandles(symbols, targetDateStr) {
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const maxToDateStr = `${targetDateStr} 15:25`;
+
+    console.log(`\n[PHASE 1] Updating historical_candles for ALL ${symbols.length} symbols up to ${maxToDateStr}...`);
+
+    for (const symbol of symbols) {
+        try {
+            let rawData = await getRawDataFromDB(symbol);
+            await fillGapForSymbol(symbol, rawData, maxToDateStr);
+        } catch (e) {
+            console.error(`[PHASE 1] Error updating historical_candles for ${symbol}:`, e.message);
+        }
+        await sleep(1500); // Respect API rate limits
+    }
+
+    console.log(`[PHASE 1] ✅ historical_candles update complete for all symbols.`);
+}
+
 async function performCalculations() {
     const pool = db.getDB();
     const res = await pool.query('SELECT DISTINCT symbol FROM historical_candles');
     const symbols = res.rows.map(r => r.symbol);
     
-    // Support resumability: skip symbols already processed today
-    const resPayloads = await pool.query('SELECT symbol FROM symbol_payloads WHERE DATE(updated_at) = CURRENT_DATE');
-    const processedSymbolsSet = new Set(resPayloads.rows.map(r => r.symbol));
-    const remainingSymbols = symbols.filter(s => !processedSymbolsSet.has(s));
-
-    console.log(`[${new Date().toLocaleTimeString()}] Found ${symbols.length} total symbols. ${processedSymbolsSet.size} already processed today. Starting Deep Scan for remaining ${remainingSymbols.length}...`);
-    
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const targetDateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
 
-    const BATCH_SIZE = 5; // Reduced batch size for stability with retry delays
-    for (let i = 0; i < remainingSymbols.length; i += BATCH_SIZE) {
-        const batch = remainingSymbols.slice(i, i + BATCH_SIZE);
+    // PHASE 1: Always update historical_candles for ALL symbols first
+    await updateHistoricalCandles(symbols, targetDateStr);
+
+    // PHASE 2: Always generate payloads after fetching the full day's data
+    console.log(`\n[PHASE 2] Generating fresh 300-candle payloads for all ${symbols.length} symbols...`);
+
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+        const batch = symbols.slice(i, i + BATCH_SIZE);
         for (const symbol of batch) {
             await processSymbol(symbol, targetDateStr);
-            await sleep(1500); // Wait between symbols to respect API limits
+            await sleep(1500);
         }
     }
     
