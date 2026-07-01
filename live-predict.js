@@ -2,6 +2,7 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
+const cors = require("cors");
 const axios = require("axios");
 const fs = require("fs");
 const csv = require("csv-parser");
@@ -24,11 +25,12 @@ function logToFile(file, msg) {
 }
 
 const app = express();
+app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const PORT = process.env.LIVE_PORT || 3001;
-const PREDICT_URL = "http://43.205.133.183:8000/predict";
+const PREDICT_URL = "http://13.207.78.205:8000/predict";
 
 const tokenCache = {};
 const ohlcvCache = {};
@@ -412,9 +414,10 @@ app.all("/api/predict-ondemand", async (req, res) => {
 app.get("/api/predictResult", async (req, res) => {
   try {
     const resDB = await db.query(`
-      SELECT symbol, tick_data as tick, response_data as response 
+      SELECT DISTINCT ON (symbol) symbol, tick_data as tick, response_data as response 
       FROM prediction_logs 
       WHERE DATE(created_at) = CURRENT_DATE
+      ORDER BY symbol, created_at DESC
     `);
     
     // Filter to only successful signals
@@ -554,7 +557,16 @@ async function startGlobalTickCollector() {
     while (true) {
       const now = new Date();
       const timeStr = `${padDate(now.getHours())}:${padDate(now.getMinutes())}:${padDate(now.getSeconds())}`;
-      
+
+      // Don't collect before market opens at 09:15
+      if (timeStr < "09:15:00") {
+        const msUntilOpen = new Date().setHours(9, 15, 0, 0) - Date.now();
+        const waitMs = msUntilOpen > 0 ? msUntilOpen : 60000;
+        console.log(`[GlobalTickCollector] Market not open yet (${timeStr}). Waiting until 09:15...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+
       if (timeStr > "15:30:00") {
         console.log("[GlobalTickCollector] Market closed (after 15:30). Sleeping for 1 minute...");
         await new Promise(r => setTimeout(r, 60000));

@@ -97,6 +97,7 @@ function initDB() {
 function insertTick(symbol, open, high, low, close, volume, timestampStr) {
   return new Promise(async (resolve, reject) => {
     try {
+      if (isPoolClosed) return resolve();
       const query = `
         INSERT INTO ticks (symbol, open, high, low, close, volume, timestamp)
         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id;
@@ -113,6 +114,7 @@ function insertTick(symbol, open, high, low, close, volume, timestampStr) {
 function upsertCandle(symbol, open, high, low, close, volume, timestampStr) {
   return new Promise(async (resolve, reject) => {
     try {
+      if (isPoolClosed) return resolve();
       const query = `
         INSERT INTO candles_5m (symbol, open, high, low, close, volume, timestamp) 
         VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -132,8 +134,20 @@ function upsertCandle(symbol, open, high, low, close, volume, timestampStr) {
   });
 }
 
-function getTicksInRange(symbol, fromStr, toStr) {
-  return Promise.resolve([]);
+async function getTicksInRange(symbol, fromStr, toStr) {
+  try {
+    if (isPoolClosed) return [];
+    const res = await pool.query(
+      `SELECT open, high, low, close, volume, timestamp FROM ticks
+       WHERE symbol = $1 AND timestamp >= $2 AND timestamp < $3
+       ORDER BY timestamp ASC`,
+      [symbol, fromStr, toStr]
+    );
+    return res.rows;
+  } catch (err) {
+    console.error('[DB] Error fetching ticks in range:', err);
+    return [];
+  }
 }
 
 function aggregateOHLCFromTicks(rows) {
@@ -148,8 +162,19 @@ function aggregateOHLCFromTicks(rows) {
   };
 }
 
-function cleanOldTicks(hours = 1) {
-  return Promise.resolve(0);
+async function cleanOldTicks(hours = 1) {
+  try {
+    if (isPoolClosed) return 0;
+    const res = await pool.query(
+      `DELETE FROM ticks WHERE timestamp < NOW() - INTERVAL '${hours} hours'`
+    );
+    const deleted = res.rowCount || 0;
+    if (deleted > 0) console.log(`[DB] Cleaned ${deleted} old ticks (older than ${hours}h)`);
+    return deleted;
+  } catch (err) {
+    console.error('[DB] Error cleaning old ticks:', err);
+    return 0;
+  }
 }
 
 function getDB() {
@@ -186,5 +211,11 @@ module.exports = {
   closeDB,
   getFiveMinuteBucket,
   formatTimestamp,
-  query: (text, params) => pool.query(text, params),
+  query: (text, params) => {
+    if (isPoolClosed) {
+      // Return a dummy resolved promise to avoid unhandled rejections during shutdown
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    }
+    return pool.query(text, params);
+  },
 };

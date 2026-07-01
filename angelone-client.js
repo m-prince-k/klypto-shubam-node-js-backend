@@ -1,8 +1,12 @@
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 const axios = require("axios");
+const https = require("https");
 const authenticator = require("authenticator");
 
+// Create a single keep-alive Axios instance for all Angel One requests
+const agent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+const api = axios.create({ httpsAgent: agent });
 const ANGELONE_CLIENT_ID = process.env.ANGEL_CLIENT_CODE;
 const ANGELONE_CLIENT_SECRET = process.env.ANGEL_API_KEY;
 const ANGELONE_PASSWORD = process.env.ANGEL_PASSWORD;
@@ -11,16 +15,25 @@ const ANGELONE_TOTP = process.env.ANGEL_TOTP_SECRET;
 let jwtToken = null;
 let jwtTokenExpiry = 0;
 let scripMaster = null;
+let loginPromise = null; // Mutex to prevent multiple concurrent logins
 
 async function ensureLoggedIn() {
   if (jwtToken && Date.now() < jwtTokenExpiry) return;
+
+  if (loginPromise) {
+    await loginPromise;
+    return;
+  }
 
   if (!ANGELONE_CLIENT_ID || !ANGELONE_PASSWORD || !ANGELONE_CLIENT_SECRET || !ANGELONE_TOTP) {
     throw new Error("Missing Angel One credentials. Set ANGEL_CLIENT_CODE, ANGEL_PASSWORD, ANGEL_API_KEY, and ANGEL_TOTP_SECRET.");
   }
 
-  const totpCode = authenticator.generateToken(ANGELONE_TOTP);
-  const loginRes = await axios.post(
+  loginPromise = (async () => {
+    try {
+
+      const totpCode = authenticator.generateToken(ANGELONE_TOTP);
+      const loginRes = await api.post(
     "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword",
     {
       clientcode: ANGELONE_CLIENT_ID,
@@ -41,21 +54,27 @@ async function ensureLoggedIn() {
     }
   );
 
-  if (loginRes.data.status && loginRes.data.data) {
-    jwtToken = loginRes.data.data.jwtToken;
-    jwtTokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
-    require('fs').writeFileSync(path.join(__dirname, 'jwt.txt'), jwtToken);
-    console.log("=> WROTE JWT TOKEN TO jwt.txt");
-  } else {
-    throw new Error("Angel One Login failed: " + JSON.stringify(loginRes.data));
-  }
+      if (loginRes.data.status && loginRes.data.data) {
+        jwtToken = loginRes.data.data.jwtToken;
+        jwtTokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
+        require('fs').writeFileSync(path.join(__dirname, 'jwt.txt'), jwtToken);
+        console.log("=> WROTE JWT TOKEN TO jwt.txt");
+      } else {
+        throw new Error("Angel One Login failed: " + JSON.stringify(loginRes.data));
+      }
+    } finally {
+      loginPromise = null; // Release the lock
+    }
+  })();
+
+  await loginPromise;
 }
 
 async function getTokenForSymbol(symbol) {
   if (!scripMaster) {
     console.log("[AngelOne] Downloading Scrip Master...");
     try {
-      const res = await axios.get(
+      const res = await api.get(
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
         { timeout: 15000 }
       );
@@ -82,7 +101,7 @@ async function getTokenForSymbol(symbol) {
 async function fetchLTP(symbol, token) {
   await ensureLoggedIn();
 
-  const response = await axios.post(
+  const response = await api.post(
     "https://apiconnect.angelbroking.com/rest/secure/angelbroking/order/v1/getLtpData",
     {
       exchange: "NSE",
@@ -115,7 +134,7 @@ async function fetchMarketData(symbol, token) {
   await ensureLoggedIn();
 
   try {
-    const response = await axios.post(
+    const response = await api.post(
       "https://apiconnect.angelbroking.com/rest/secure/angelbroking/order/v1/getLtpData",
       {
         exchange: "NSE",
@@ -157,7 +176,7 @@ async function fetchHistoricalCandles(symbol, token, interval, fromdate, todate)
   await ensureLoggedIn();
 
   try {
-    const response = await axios.post(
+    const response = await api.post(
       "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData",
       {
         exchange: "NSE",
@@ -196,7 +215,7 @@ async function fetchMarketDataBatch(tokens) {
   await ensureLoggedIn();
 
   try {
-    const response = await axios.post(
+    const response = await api.post(
       "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote",
       {
         mode: "FULL",
