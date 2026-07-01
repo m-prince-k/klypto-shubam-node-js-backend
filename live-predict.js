@@ -30,7 +30,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const PORT = process.env.LIVE_PORT || 3001;
-const PREDICT_URL = "http://43.205.133.183:8000/predict";
+const PREDICT_URL = "http://13.207.78.205:8000/predict";
 
 const tokenCache = {};
 const ohlcvCache = {};
