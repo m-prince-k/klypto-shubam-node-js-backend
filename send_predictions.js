@@ -204,9 +204,14 @@ async function main() {
   const minutes = now.getMinutes();
   const timeStr = `${hours}${minutes.toString().padStart(2, '0')}`;
   
-  LOG_FILE = path.join(__dirname, "prediction logs", `prediction${timeStr}.log`);
-  PAYLOAD_LOG = path.join(__dirname, "prediction logs", `prediction_payloads${timeStr}.log`);
-  const TICK_LOG = path.join(__dirname, "prediction logs", `${TARGET_HOUR}_${TARGET_MINUTE}_ticks.log`);
+  const logDir = path.join(__dirname, "prediction logs");
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+
+  LOG_FILE = path.join(logDir, `prediction${timeStr}.log`);
+  PAYLOAD_LOG = path.join(logDir, `prediction_payloads${timeStr}.log`);
+  const TICK_LOG = path.join(logDir, `${TARGET_HOUR}_${TARGET_MINUTE}_ticks.log`);
 
   logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
   payloadLogStream = fs.createWriteStream(PAYLOAD_LOG, { flags: 'a' });
@@ -222,7 +227,7 @@ async function main() {
 
   logStream.write(`--- Prediction Run at ${new Date().toISOString()} ---\n`);
 
-  const CONCURRENCY = 10;
+  const CONCURRENCY = 5;
   const startTime = Date.now();
   
   // Phase 1: Fetch Ticks for all symbols with a Sweep Loop
@@ -236,6 +241,7 @@ async function main() {
     const failedSymbols = [];
 
     await asyncPool(CONCURRENCY, symbolsToFetch, async (symbol) => {
+      await new Promise(r => setTimeout(r, 500)); // Respect Angel One rate limits
       const result = await getLatestTick(symbol);
       allTickResults[symbol] = result;
       if (!result.success) {
